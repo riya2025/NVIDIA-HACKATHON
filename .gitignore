@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.env
+*.env
+
+# Node
+node_modules/
+dist/
+build/
+.next/
+*.local
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs & artifacts
+*.log
+.coverage
+coverage/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
