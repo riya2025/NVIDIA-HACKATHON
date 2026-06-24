@@ -320,10 +320,3 @@ User: "Build a pothole reporting application with user login, map, and admin das
 
 ---
 
-## 12. Why NVIDIA Judges Will Like It
-
-- **Agentic depth:** a true multi-agent system with a closed self-healing loop, not a single prompt.
-- **NVIDIA-native, deep:** **NemoClaw** (sandboxed runtime + OpenShell network-policy governance) + **NeMo Agent Toolkit** (observability, profiling, Web UI HITL) + **NIM Nemotron** + Evaluator + Retriever — a genuinely full-stack use of the agentic platform.
-- **Safety done right:** action-taking agents run **sandboxed**, and production-impacting actions require **operator approval** — the exact governance story NVIDIA promotes with NemoClaw.
-- **Production-grade ops:** real CI/CD monitoring of **GitHub Actions** and **Render** with policy-gated, human-approved self-healing.
-- **Live wow factor:** intentionally break a deploy on stage → agents detect, diagnose, and (with one-click operator approval) heal it autonomously.
