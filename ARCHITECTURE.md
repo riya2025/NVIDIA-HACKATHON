@@ -22,7 +22,7 @@ It combines, into one control plane, capabilities resembling:
 
 - **GitHub Copilot** — code generation
 - **Cursor** — development workflow
-- **Kubernetes / Render** — deployment & operations
+- **AWS (ECS Fargate) / Kubernetes** — deployment & operations
 - **AgentOps platforms** — observability, governance, self-healing
 
 The result is an **"Operating System for Enterprise AI Workforces"**: a team of autonomous agents performing a complete SDLC rather than acting as isolated chatbots.
@@ -49,10 +49,10 @@ flowchart TD
 | 1 | **Architect** | Requirement → tech design (JSON spec: frontend, backend, DB, deploy) | NIM: Llama **Nemotron** (reasoning) |
 | 2 | **Developer** | Spec → code, project structure, Dockerfile, API routes, DB schema | NemoClaw harness (**LangChain Deep Agents Code**) + Nemotron |
 | 3 | **Tester** | Lint, unit tests, API tests, security scan — run **in an OpenShell sandbox** | NemoClaw sandbox + **NeMo Evaluator** |
-| 4 | **Deployment** | Build image → deploy to Render → verify health | Agent tools (Render API) behind **NemoClaw network policy** |
-| 5 | **Monitoring** | Watch GitHub Actions runs + Render service health + runtime metrics; raise incidents | NAT observability exporters + Prometheus |
-| 6 | **RCA** | Analyze CI logs / runtime logs → find root cause → create incident | NIM Nemotron + **NeMo Retriever** (RAG over logs) |
-| 7 | **Self-Healing** | Re-run workflow / rollback / redeploy to restore service | NAT `automatic_retries` + Render API behind **NemoClaw operator-approval egress** |
+| 4 | **Deployment** | Build image → push to **ECR** → deploy to **ECS (Fargate)** → verify health via **ALB** | AWS SDK (boto3) behind **NemoClaw network policy** |
+| 5 | **Monitoring** | Watch GitHub Actions runs + **ECS/CloudWatch** service health + runtime metrics; raise incidents | NAT exporters + Prometheus + **Grafana** (dashboards/alerts) |
+| 6 | **RCA** | Analyze CI logs / runtime logs → find root cause → create incident | NIM Nemotron + **NeMo Retriever** (**GraphRAG** over Neo4j) |
+| 7 | **Self-Healing** | Re-run workflow / rollback / redeploy to restore service | NAT `automatic_retries` + AWS SDK (ECS) behind **NemoClaw operator-approval egress** |
 
 Every agent that **executes real actions** (runs code, shell, git push, deploys, rollbacks) runs **inside a NemoClaw / OpenShell sandbox** with hardening and network-policy approval. Observability across all seven is provided by **NAT-instrumented functions**, which give:
 - **Observability** — an event-driven `IntermediateStepManager` streams every function/LLM/tool call to telemetry exporters (OpenTelemetry, Phoenix, Langfuse).
@@ -84,9 +84,9 @@ flowchart LR
 **The closed loop:**
 1. **Monitoring** continuously ingests runtime metrics & logs.
 2. On a failure/anomaly (crash, latency spike, error surge) it triggers **RCA**.
-3. **RCA** uses Nemotron reasoning + RAG over logs/runbooks to find root cause.
+3. **RCA** uses Nemotron reasoning + **GraphRAG** (Neo4j graph traversal + vector search) over logs/runbooks to find root cause.
 4. **Self-Healing** selects an action: restart, rollback, redeploy, scale.
-5. **NemoClaw network policy** auto-allows low-risk egress; **routes high-risk actions (prod rollback, git push) to the operator approval flow** before the action can reach GitHub/Render.
+5. **NemoClaw network policy** auto-allows low-risk egress; **routes high-risk actions (prod rollback, git push) to the operator approval flow** before the action can reach GitHub/AWS.
 6. Re-deploy and verify health; if unresolved, escalate.
 
 ---
@@ -119,13 +119,14 @@ flowchart TB
 
     subgraph DATA["State & Telemetry"]
         PG[("Postgres")]
-        VDB[("Vector DB / Milvus")]
+        VDB[("Neo4j<br/>graph + vector")]
         OBS["OTel / Phoenix / Prometheus"]
+        GRAF["Grafana<br/>dashboards + alerts"]
     end
 
     subgraph OPS["CI/CD & Deploy"]
         GHA["GitHub Actions<br/>build · test workflows"]
-        REND["Render<br/>service + deploys"]
+        REND["AWS<br/>ECS Fargate + ALB"]
         APP[("Generated App")]
     end
 
@@ -145,20 +146,23 @@ flowchart TB
     NETPOL -->|"approved egress: deploy / rollback"| REND
     REND -->|"events / health"| AGENTS
     APP --> OBS --> AGENTS
+    OBS --> GRAF
+    GRAF -->|"alerts"| AGENTS
+    GRAF --> UI
 ```
 
 ---
 
 ## 5. NemoClaw — Secure Execution & Governance Substrate
 
-AI Foundry agents don't just chat — they **execute high-risk real-world actions**: run generated code, execute shell commands, push to GitHub, deploy to Render, and **roll back production**. **NVIDIA NemoClaw** is the open-source reference stack that runs these always-on agents *safely*, and it becomes the runtime + governance layer the entire workforce sits inside ([NVIDIA/NemoClaw](https://github.com/NVIDIA/NemoClaw)).
+AI Foundry agents don't just chat — they **execute high-risk real-world actions**: run generated code, execute shell commands, push to GitHub, deploy to AWS, and **roll back production**. **NVIDIA NemoClaw** is the open-source reference stack that runs these always-on agents *safely*, and it becomes the runtime + governance layer the entire workforce sits inside ([NVIDIA/NemoClaw](https://github.com/NVIDIA/NemoClaw)).
 
 ### What NemoClaw provides
 
 | Capability | What it does | Where AI Foundry uses it |
 |------------|--------------|--------------------------|
 | **OpenShell sandbox** | Hardened containers, capability drops, process limits | Developer & Tester & Self-Healing agents run untrusted code/builds without risking the host |
-| **Network policy + operator approval** | Baseline egress rules; high-risk egress requires operator sign-off | The **self-healing approval gate** — prod rollback, redeploy, and `git push` need approval before reaching GitHub/Render APIs |
+| **Network policy + operator approval** | Baseline egress rules; high-risk egress requires operator sign-off | The **self-healing approval gate** — prod rollback, redeploy, and `git push` need approval before reaching GitHub/AWS APIs |
 | **Routed inference** | Local Nemotron vs cloud frontier vs model router under policy | Cost/privacy-aware model selection per agent |
 | **Lifecycle management (CLI)** | Manage always-on agents | The 24/7 Monitoring + Self-Healing agents run as managed NemoClaw agents |
 | **Supported harnesses** | OpenClaw, Hermes, **LangChain Deep Agents Code** | The Developer agent is built on the LangChain Deep Agents Code harness |
@@ -174,7 +178,7 @@ flowchart LR
     POL -->|"high-risk: out of baseline"| APPROVE["Operator approval flow"]
     APPROVE -->|"approve"| ALLOW
     APPROVE -->|"deny"| BLOCK["Block + escalate"]
-    ALLOW --> EXT["GitHub / Render API"]
+    ALLOW --> EXT["GitHub / AWS API"]
 ```
 
 > **Accuracy note for the submission:** NemoClaw (alpha, TypeScript CLI on OpenShell) is distinct from the NeMo Agent Toolkit. In practice the Python control plane invokes the **execution/self-healing agents as NemoClaw-managed sandboxed agents**, while inference stays on the hosted `build.nvidia.com` Nemotron endpoint via NemoClaw routed inference.
@@ -210,7 +214,7 @@ flowchart LR
 
 ## 7. CI/CD & Deployment Monitoring (Production-Grade)
 
-This is the core of "monitor the git workflow + Render and make it production-level." The **Monitoring Agent** watches two planes and feeds the RCA → Self-Healing loop.
+This is the core of "monitor the git workflow + AWS and make it production-level." The **Monitoring Agent** watches two planes and feeds the RCA → Self-Healing loop.
 
 ### 6.1 GitHub Actions (the "git workflow")
 
@@ -222,25 +226,25 @@ This is the core of "monitor the git workflow + Render and make it production-le
   - Broken `main` → **revert** the offending commit and re-trigger the pipeline.
 - **Production concerns:** signed-webhook verification (HMAC), idempotent event handling, retry with backoff (`patch_with_retry`), rate-limit awareness, audit log of every automated action.
 
-### 6.2 Render (deployment + runtime)
+### 6.2 AWS (deployment + runtime)
 
-- **Ingest:** Render **deploy webhooks** + **Render API** polling for service & deploy status; periodic **health-check probes** (`GET /health`) and metrics (CPU, memory, latency, error rate).
-- **Detect:** failed deploys, crash-looping service, unhealthy `/health`, latency/error-rate SLO breaches.
+- **Ingest:** **Amazon CloudWatch** metrics/logs/alarms + **EventBridge** events for ECS task/deployment state; periodic **health-check probes** via the **Application Load Balancer** target group (`GET /health`); metrics (CPU, memory, latency, error rate) from CloudWatch + Container Insights.
+- **Detect:** failed deployments, crash-looping tasks, unhealthy ALB targets, `/health` failures, latency/error-rate SLO breaches.
 - **Act (Self-Healing):**
-  - Failed deploy → **rollback to last healthy deploy** (Render rollback API).
-  - Crash loop / OOM → **redeploy** and (optionally) bump the plan/memory.
-  - Health probe failing → **restart service**, then re-verify.
-- **Production concerns:** guardrail-gated rollbacks, HITL approval for production, exponential backoff to avoid redeploy storms, and a verification step (re-probe health + NeMo Evaluator smoke test) before closing the incident.
+  - Failed deployment → **roll back to the previous ECS task-definition revision** (or CodeDeploy blue/green rollback).
+  - Crash loop / OOM → **force a new deployment** and (optionally) bump task CPU/memory.
+  - Unhealthy targets → **restart the ECS service** (stop tasks → ECS reschedules), then re-verify.
+- **Production concerns:** IAM least-privilege roles, GitHub→AWS auth via **OIDC (no static keys)**, guardrail-gated rollbacks, HITL approval for production, exponential backoff to avoid redeploy storms, and a verification step (re-probe health + NeMo Evaluator smoke test) before closing the incident.
 
 ```mermaid
 flowchart TB
     subgraph SRC["Monitored Planes"]
         GH["GitHub Actions<br/>workflow_run · check_run"]
-        RN["Render<br/>deploy + health + metrics"]
+        RN["AWS<br/>ECS + CloudWatch + ALB"]
     end
     GH -->|"webhook / API poll"| MON["Monitoring Agent"]
-    RN -->|"webhook / health probe"| MON
-    MON -->|"incident"| RCA["RCA Agent (Nemotron + RAG over logs)"]
+    RN -->|"CloudWatch alarm / health probe"| MON
+    MON -->|"incident"| RCA["RCA Agent (Nemotron + GraphRAG / Neo4j)"]
     RCA --> HEAL["Self-Healing Agent"]
     HEAL --> GATE{"Guardrails + HITL"}
     GATE -->|"re-run job / auto-fix PR"| GH
@@ -259,12 +263,13 @@ flowchart TB
 - **Secure runtime:** **NemoClaw / OpenShell** sandboxes for any action-taking agent (code exec, builds, deploys); routed inference; lifecycle management for always-on agents.
 - **Orchestration & observability:** NeMo Agent Toolkit instruments and profiles the 7-agent workforce (framework-agnostic).
 - **Inference:** NVIDIA NIM serving **Llama Nemotron** (reasoning + code) via the hosted `build.nvidia.com` API (routed through NemoClaw).
-- **Governance:** **NemoClaw network policy + operator approval** gates all high-risk egress (GitHub/Render); HITL surfaced in the NAT Web UI.
+- **Governance:** **NemoClaw network policy + operator approval** gates all high-risk egress (GitHub/AWS); HITL surfaced in the NAT Web UI.
 - **Reliability:** NeMo Evaluator for regression/smoke testing; `patch_with_retry` for resilient agent/tool calls.
-- **Integrations:** GitHub Actions API + webhooks; Render API + webhooks (CI/CD monitoring tools).
-- **State & data:** Postgres (projects, runs, incidents, audit log); Vector DB / Milvus (logs & runbooks for RAG via NeMo Retriever).
-- **Telemetry:** NAT observability exporters → OpenTelemetry / Phoenix / Prometheus, consumed by the Monitoring agent and dashboard.
-- **Deploy target:** Render for the generated apps.
+- **Integrations:** GitHub Actions API + webhooks; AWS SDK (boto3) — ECS, ECR, CloudWatch, EventBridge (CI/CD + runtime monitoring).
+- **State & data:** Postgres (projects, runs, incidents, audit log); **Neo4j graph + vector DB** for **GraphRAG** (incidents ↔ commits ↔ deploys ↔ logs ↔ runbooks) via NeMo Retriever.
+- **Logging:** `loguru` as the application logger across all agents/modules (structured, correlation IDs per run), routed to stdout + CloudWatch and into OpenTelemetry.
+- **Telemetry:** NAT observability exporters → OpenTelemetry / Phoenix / Prometheus, visualized in **Grafana** (dashboards + alert rules); Grafana alerts and CloudWatch alarms are consumed by the Monitoring agent.
+- **Deploy target:** AWS (ECS Fargate + ECR, fronted by an ALB) for the generated apps.
 
 ---
 
@@ -280,7 +285,7 @@ Two complementary front-ends (see Section 5):
 - **Key views:**
   1. **Pipeline View** — live `Generate → Test → Deploy` progress per agent.
   2. **Dashboard** — deployed app health: status, CPU, memory, latency.
-  3. **CI/CD View** — GitHub Actions runs + Render deploy status + auto-fix PRs.
+  3. **CI/CD View** — GitHub Actions runs + AWS (ECS) deploy status + auto-fix PRs.
   4. **Self-Healing Console** — incident timeline: detect → diagnose → heal, with approve/reject.
   5. **Governance Center** — guardrail policies, violations, audit trail.
   6. **Reliability Lab** — NeMo Evaluator scorecards & regression trends.
@@ -291,9 +296,9 @@ Two complementary front-ends (see Section 5):
 
 | Phase | Goal | Outcome |
 |-------|------|---------|
-| **1 — Generate** | Prompt → Architect + Developer produce a working app (Next.js + FastAPI + Dockerfile + render.yaml) | Code generation works |
-| **2 — Deploy** | Generate → GitHub push → Render deploy → health check | Live URL |
-| **3 — Monitor** | Dashboard of status, CPU, memory, latency | Observability |
+| **1 — Generate** | Prompt → Architect + Developer produce a working app (Next.js + FastAPI + Dockerfile + ECS task definition) | Code generation works |
+| **2 — Deploy** | Generate → GitHub push → CI builds image → push to ECR → deploy to ECS → health check | Live URL |
+| **3 — Monitor** | **Grafana** dashboards of status, CPU, memory, latency + alert rules | Observability |
 | **4 — Self-Heal** | Kill backend → Monitor detects → RCA analyzes → redeploy → restored | The "wow" demo |
 
 **Focus:** one app type (SaaS web app) with the loop **Generate → Deploy → Monitor → Self-Heal** working flawlessly — far more impressive than ten partial features.
@@ -305,10 +310,10 @@ Two complementary front-ends (see Section 5):
 ```
 User: "Build a pothole reporting application with user login, map, and admin dashboard."
 
-→ Architect:    Next.js + FastAPI + PostgreSQL + Docker/Render
+→ Architect:    Next.js + FastAPI + PostgreSQL + Docker/AWS (ECS)
 → Developer:    frontend, backend, Dockerfile, API routes, DB schema
 → Tester:       unit + API tests + lint + security scan  ✔
-→ Deployment:   build → deploy to Render → /health 200 OK
+→ Deployment:   build → push to ECR → deploy to ECS → /health 200 OK
 → Monitoring:   status Healthy · CPU 23% · Mem 42% · Latency 150ms
 
 [Operator kills the backend service]
@@ -325,5 +330,5 @@ User: "Build a pothole reporting application with user login, map, and admin das
 - **Agentic depth:** a true multi-agent system with a closed self-healing loop, not a single prompt.
 - **NVIDIA-native, deep:** **NemoClaw** (sandboxed runtime + OpenShell network-policy governance) + **NeMo Agent Toolkit** (observability, profiling, Web UI HITL) + **NIM Nemotron** + Evaluator + Retriever — a genuinely full-stack use of the agentic platform.
 - **Safety done right:** action-taking agents run **sandboxed**, and production-impacting actions require **operator approval** — the exact governance story NVIDIA promotes with NemoClaw.
-- **Production-grade ops:** real CI/CD monitoring of **GitHub Actions** and **Render** with policy-gated, human-approved self-healing.
+- **Production-grade ops:** real CI/CD monitoring of **GitHub Actions** and **AWS (ECS/CloudWatch)** with policy-gated, human-approved self-healing.
 - **Live wow factor:** intentionally break a deploy on stage → agents detect, diagnose, and (with one-click operator approval) heal it autonomously.

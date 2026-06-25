@@ -1,0 +1,384 @@
+import { useEffect, useRef, useState } from "react";
+import { AgentCard } from "./components/AgentCard";
+import { createProject, getProject, openEventStream, triggerIncident } from "./api";
+import { STAGES, type AgentStatus, type FoundryEvent, type Project } from "./types";
+
+const DEFAULT_PROMPT =
+  "A simple to-do list app: add a task with a title, mark tasks as done, " +
+  "delete tasks, and filter by All / Active / Done.";
+
+const LABELS: Record<string, string> = {
+  architect: "Architect",
+  developer: "Developer",
+  tester: "Tester",
+  deployment: "Deployment",
+  monitoring: "Monitoring",
+  rca: "RCA",
+  healing: "Self-Healing",
+};
+
+const FRONTEND_KEY = "frontend (React App)";
+const BACKEND_KEY = "backend/main.py";
+
+function fmtElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  return m > 0 ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
+}
+
+export default function App() {
+  const [name, setName] = useState("Quick To-Do");
+  const [description, setDescription] = useState(DEFAULT_PROMPT);
+  const [project, setProject] = useState<Project | null>(null);
+  const [events, setEvents] = useState<FoundryEvent[]>([]);
+  const [statuses, setStatuses] = useState<Record<string, AgentStatus>>({});
+  const [lastLog, setLastLog] = useState<Record<string, string>>({});
+  const [code, setCode] = useState<Record<string, { preview: string; chars: number }>>({});
+  const [pipelineStatus, setPipelineStatus] = useState("pending");
+  const [busy, setBusy] = useState(false);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [now, setNow] = useState<number>(Date.now());
+  const projectId = useRef<string | null>(null);
+  const logsEnd = useRef<HTMLDivElement>(null);
+  const liveAppRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const ws = openEventStream((e: FoundryEvent) => {
+      if (projectId.current && e.project_id !== projectId.current) return;
+      setEvents((prev) => [...prev, e]);
+
+      if (e.type === "agent_started") setStatuses((s) => ({ ...s, [e.agent]: "running" }));
+      if (e.type === "agent_completed") setStatuses((s) => ({ ...s, [e.agent]: "success" }));
+      if (e.type === "agent_failed") setStatuses((s) => ({ ...s, [e.agent]: "failed" }));
+      if (e.type === "agent_log") setLastLog((l) => ({ ...l, [e.agent]: e.message }));
+      if (e.type === "code_preview" && e.data?.path)
+        setCode((c) => ({ ...c, [e.data.path]: { preview: e.data.preview, chars: e.data.chars } }));
+      if (e.type === "deployed" && e.data?.url) {
+        // Auto-open the freshly deployed app in a new tab.
+        try {
+          window.open(e.data.url, "_blank", "noopener");
+        } catch {
+          /* popup blocked — the embedded iframe + link still work */
+        }
+      }
+      if (e.type === "pipeline" && e.data?.pipeline_status)
+        setPipelineStatus(e.data.pipeline_status);
+      if (e.type === "incident") {
+        setPipelineStatus("degraded");
+        setStatuses((s) => ({ ...s, rca: "idle", healing: "idle" }));
+      }
+      if (e.type === "healed") setPipelineStatus("healed");
+
+      if (projectId.current) getProject(projectId.current).then(setProject).catch(() => {});
+    });
+    return () => ws.close();
+  }, []);
+
+  useEffect(() => {
+    logsEnd.current?.scrollIntoView({ behavior: "smooth" });
+  }, [events]);
+
+  useEffect(() => {
+    if (project?.deploy_url) {
+      liveAppRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [project?.deploy_url]);
+
+  const terminal =
+    pipelineStatus === "live" ||
+    pipelineStatus === "healed" ||
+    pipelineStatus === "failed";
+
+  useEffect(() => {
+    if (startedAt === null || terminal) return;
+    const id = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(id);
+  }, [startedAt, terminal]);
+
+  async function onGenerate() {
+    setBusy(true);
+    setEvents([]);
+    setStatuses({});
+    setLastLog({});
+    setCode({});
+    setPipelineStatus("running");
+    setStartedAt(Date.now());
+    setNow(Date.now());
+    try {
+      const p = await createProject(name, description);
+      projectId.current = p.id;
+      setProject(p);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onIncident() {
+    if (projectId.current) await triggerIncident(projectId.current);
+  }
+
+  const m = project?.metrics;
+  const live = pipelineStatus === "live" || pipelineStatus === "healed";
+
+  const completedCount = STAGES.filter((s) => statuses[s] === "success").length;
+  const failed = STAGES.some((s) => statuses[s] === "failed");
+  const progressPct = Math.round((completedCount / STAGES.length) * 100);
+  const currentStage = STAGES.find((s) => statuses[s] === "running");
+  const elapsed = startedAt !== null ? fmtElapsed(now - startedAt) : null;
+
+  const devStatus: AgentStatus = statuses["developer"] ?? "idle";
+  const isGenerating = devStatus === "running";
+  const frontendCode = code[FRONTEND_KEY];
+  const backendCode = code[BACKEND_KEY];
+
+  const activity = currentStage
+    ? lastLog[currentStage] ?? `${LABELS[currentStage]} working…`
+    : terminal
+      ? pipelineStatus === "failed"
+        ? "Pipeline failed — see event stream"
+        : "Pipeline complete"
+      : startedAt !== null
+        ? "Working…"
+        : "Idle — describe an app and click Build & Deploy";
+
+  return (
+    <div className="app">
+      <header className="top">
+        <div>
+          <h1>
+            <span className="logo-dot" /> AI Foundry
+          </h1>
+          <div className="subtitle">
+            Autonomous Software Delivery — Generate → Deploy → Monitor → Self-Heal
+          </div>
+        </div>
+        <span className={`pill ${pipelineStatus}`}>{pipelineStatus.toUpperCase()}</span>
+      </header>
+
+      <div className="composer">
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Project name" />
+        <input
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="Describe the app to build"
+          style={{ flex: 2 }}
+        />
+        <button onClick={onGenerate} disabled={busy}>
+          {busy ? "Starting…" : "Build & Deploy"}
+        </button>
+        <button className="danger" onClick={onIncident} disabled={!live}>
+          Kill Service
+        </button>
+      </div>
+
+      {startedAt !== null && (
+        <div className={`statusbar ${failed ? "failed" : terminal ? "done" : "active"}`}>
+          <div className="statusbar-top">
+            <div className="status-activity">
+              <span className={`status-dot ${currentStage ? "pulse" : ""}`} />
+              <span className="status-text">{activity}</span>
+            </div>
+            <div className="status-meta">
+              <span className="status-count">
+                {completedCount}/{STAGES.length} stages
+              </span>
+              {elapsed && <span className="status-elapsed">⏱ {elapsed}</span>}
+            </div>
+          </div>
+
+          <div className="progress-track">
+            <div
+              className={`progress-fill ${failed ? "failed" : terminal ? "done" : ""}`}
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+
+          <div className="stepper">
+            {STAGES.map((stage) => {
+              const st = statuses[stage] ?? "idle";
+              return (
+                <div key={stage} className={`step ${st}`}>
+                  <span className="step-marker">
+                    {st === "success" ? "✓" : st === "failed" ? "✕" : st === "running" ? <span className="spinner" /> : ""}
+                  </span>
+                  <span className="step-label">{LABELS[stage]}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <div className="grid">
+        <div className="panel">
+          <h2>Agent Pipeline</h2>
+          <div className="pipeline">
+            {STAGES.map((stage) => (
+              <AgentCard
+                key={stage}
+                stage={stage}
+                status={statuses[stage] ?? "idle"}
+                last={lastLog[stage]}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div className="panel" style={{ marginBottom: 20 }} ref={liveAppRef}>
+            <div className="codegen-head">
+              <h2 style={{ margin: 0 }}>Live Application</h2>
+              {project?.deploy_url ? (
+                <a
+                  className="badge done-badge"
+                  href={project.deploy_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ textDecoration: "none" }}
+                >
+                  ↗ open in new tab
+                </a>
+              ) : (
+                statuses["deployment"] === "running" && (
+                  <span className="badge live-badge">● deploying</span>
+                )
+              )}
+            </div>
+            {project?.deploy_url ? (
+              <a
+                className="deploy-url"
+                href={project.deploy_url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {project.deploy_url} ↗
+              </a>
+            ) : (
+              <div className="deploy-url">not deployed yet</div>
+            )}
+            {project?.deploy_url && (
+              <iframe
+                className="app-frame"
+                src={project.deploy_url}
+                title="Live application preview"
+              />
+            )}
+            <div className="metrics">
+              <Metric label="Status" value={m?.status ?? "—"} good={m?.status === "healthy"} text />
+              <Metric label="CPU" value={m ? `${m.cpu}%` : "—"} />
+              <Metric label="Memory" value={m ? `${m.memory}%` : "—"} />
+              <Metric label="Latency" value={m ? `${m.latency_ms}ms` : "—"} />
+            </div>
+            {project?.incidents?.map((inc) => (
+              <div key={inc.id} className={`incident ${inc.resolved ? "resolved" : ""}`}>
+                <div className="title">
+                  {inc.resolved ? "✓ " : "⚠ "}
+                  {inc.title}
+                </div>
+                {inc.root_cause && <div className="meta">RCA: {inc.root_cause}</div>}
+                {inc.action && <div className="meta">Action: {inc.action}</div>}
+              </div>
+            ))}
+          </div>
+
+          {(isGenerating || frontendCode || backendCode) && (
+            <div className="panel codegen" style={{ marginBottom: 20 }}>
+              <div className="codegen-head">
+                <h2 style={{ margin: 0 }}>Code Generation</h2>
+                {isGenerating && <span className="badge live-badge">● generating</span>}
+                {!isGenerating && (frontendCode || backendCode) && (
+                  <span className="badge done-badge">✓ generated</span>
+                )}
+              </div>
+              <CodeTarget
+                label="Frontend — React"
+                generating={isGenerating && !frontendCode}
+                info={frontendCode}
+              />
+              <CodeTarget
+                label="Backend — FastAPI (main.py)"
+                generating={isGenerating && !backendCode}
+                info={backendCode}
+              />
+            </div>
+          )}
+
+          {Object.keys(code).length > 0 && (
+            <div className="panel" style={{ marginBottom: 20 }}>
+              <h2>Generated Code (live)</h2>
+              {Object.entries(code).map(([path, info]) => (
+                <div key={path} className="code-block">
+                  <div className="code-head">
+                    {path} <span className="chars">{info.chars.toLocaleString()} chars</span>
+                  </div>
+                  <pre>{info.preview}</pre>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="panel">
+            <h2>Live Event Stream</h2>
+            <div className="logs">
+              {events.length === 0 && <div className="empty">No events yet. Click “Build & Deploy”.</div>}
+              {events.map((e, i) => (
+                <div key={i} className={`logline ${e.type}`}>
+                  <span className="tag">[{e.agent}]</span>
+                  <span className="txt">{e.message}</span>
+                </div>
+              ))}
+              <div ref={logsEnd} />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CodeTarget({
+  label,
+  generating,
+  info,
+}: {
+  label: string;
+  generating: boolean;
+  info?: { preview: string; chars: number };
+}) {
+  const state = info ? "done" : generating ? "generating" : "pending";
+  return (
+    <div className={`code-target ${state}`}>
+      <span className="ct-icon">
+        {info ? "✓" : generating ? <span className="spinner" /> : "○"}
+      </span>
+      <span className="ct-label">{label}</span>
+      <span className="ct-status">
+        {info
+          ? `${info.chars.toLocaleString()} chars`
+          : generating
+            ? "writing…"
+            : "queued"}
+      </span>
+    </div>
+  );
+}
+
+function Metric({
+  label,
+  value,
+  good,
+  text,
+}: {
+  label: string;
+  value: string;
+  good?: boolean;
+  text?: boolean;
+}) {
+  const cls = text ? (good ? "ok" : value !== "—" ? "bad" : "") : "";
+  return (
+    <div className="metric">
+      <div className="label">{label}</div>
+      <div className={`value ${cls}`}>{value}</div>
+    </div>
+  );
+}

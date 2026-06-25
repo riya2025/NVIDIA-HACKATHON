@@ -67,8 +67,8 @@ The frontend is the **operator console** for the AI workforce. It uses **two com
 | View | What it shows |
 |------|---------------|
 | **Pipeline View** | Live `Generate → Test → Deploy` progress per agent |
-| **Dashboard** | Deployed app health: status, CPU, memory, latency |
-| **CI/CD View** | GitHub Actions runs + Render deploy status + auto-fix PRs |
+| **Dashboard** | Deployed app health: status, CPU, memory, latency (Recharts + **embedded Grafana panels**) |
+| **CI/CD View** | GitHub Actions runs + AWS (ECS) deploy status + auto-fix PRs |
 | **Self-Healing Console** | Incident timeline: detect → diagnose → heal, with approve/reject |
 | **Governance Center** | NemoClaw network-policy approvals, violations, audit trail |
 | **Reliability Lab** | NeMo Evaluator scorecards & regression trends |
@@ -125,7 +125,7 @@ The frontend is the **operator console** for the AI workforce. It uses **two com
 | **Docker** | Containerized frontend |
 | **Nginx** | Static serving (prod) |
 | **npm / pnpm** | Dependency management |
-| **Render Static Site** | Hosting |
+| **Amazon S3 + CloudFront** | Static hosting + CDN |
 
 ---
 

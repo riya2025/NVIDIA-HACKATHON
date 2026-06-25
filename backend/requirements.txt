@@ -1,0 +1,11 @@
+# Control-plane deps, pinned to versions resolved in the .venv-nat (Python 3.13)
+# environment that also hosts the NeMo Agent Toolkit. NAT is installed
+# separately via: uv pip install "nvidia-nat[langchain]"
+fastapi==0.138.0
+uvicorn[standard]==0.49.0
+pydantic==2.13.4
+pydantic-settings==2.14.2
+openai==2.44.0
+httpx==0.28.1
+python-dotenv==1.2.2
+loguru==0.7.3

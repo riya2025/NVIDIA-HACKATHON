@@ -1,0 +1,17 @@
+general:
+  front_end:
+    _type: fastapi
+
+llms:
+  nemotron:
+    _type: nim
+    model_name: nvidia/llama-3.3-nemotron-super-49b-v1.5
+    temperature: 0.4
+    max_tokens: 1024
+    thinking: false
+    do_auto_retry: true
+    num_retries: 2
+
+workflow:
+  _type: ai_foundry_architect
+  llm_name: nemotron
