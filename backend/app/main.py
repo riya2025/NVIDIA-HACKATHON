@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
+from .cache import install_langchain_llm_cache
 from .config import settings
 from .events import bus
 from .logging_config import log
@@ -16,6 +17,9 @@ from .orchestrator import report_client_error, run_build_pipeline, trigger_incid
 from pydantic import BaseModel
 
 app = FastAPI(title="AI Foundry Control Plane", version=__version__)
+
+# Cache ChatNVIDIA (RCA ReAct agent) responses via LangChain's global cache.
+install_langchain_llm_cache()
 
 app.add_middleware(
     CORSMiddleware,

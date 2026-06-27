@@ -9,7 +9,9 @@ const DEFAULT_PROMPT =
 
 const LABELS: Record<string, string> = {
   architect: "Architect",
-  developer: "Developer",
+  frontend: "Frontend",
+  backend: "Backend",
+  devops: "DevOps",
   tester: "Tester",
   deployment: "Deployment",
   monitoring: "Monitoring",
@@ -126,8 +128,13 @@ export default function App() {
   const currentStage = STAGES.find((s) => statuses[s] === "running");
   const elapsed = startedAt !== null ? fmtElapsed(now - startedAt) : null;
 
-  const devStatus: AgentStatus = statuses["developer"] ?? "idle";
-  const isGenerating = devStatus === "running";
+  const frontendStatus: AgentStatus = statuses["frontend"] ?? "idle";
+  const backendStatus: AgentStatus = statuses["backend"] ?? "idle";
+  const devopsStatus: AgentStatus = statuses["devops"] ?? "idle";
+  const isGenerating =
+    frontendStatus === "running" ||
+    backendStatus === "running" ||
+    devopsStatus === "running";
   const frontendCode = code[FRONTEND_KEY];
   const backendCode = code[BACKEND_KEY];
 
@@ -292,13 +299,19 @@ export default function App() {
               </div>
               <CodeTarget
                 label="Frontend — React"
-                generating={isGenerating && !frontendCode}
+                generating={frontendStatus === "running" && !frontendCode}
                 info={frontendCode}
               />
               <CodeTarget
                 label="Backend — FastAPI (main.py)"
-                generating={isGenerating && !backendCode}
+                generating={backendStatus === "running" && !backendCode}
                 info={backendCode}
+              />
+              <CodeTarget
+                label="DevOps — Dockerfile / compose"
+                generating={devopsStatus === "running"}
+                done={devopsStatus === "success"}
+                doneText="artifacts written"
               />
             </div>
           )}
@@ -340,24 +353,31 @@ function CodeTarget({
   label,
   generating,
   info,
+  done,
+  doneText,
 }: {
   label: string;
   generating: boolean;
   info?: { preview: string; chars: number };
+  done?: boolean;
+  doneText?: string;
 }) {
-  const state = info ? "done" : generating ? "generating" : "pending";
+  const isDone = !!info || !!done;
+  const state = isDone ? "done" : generating ? "generating" : "pending";
   return (
     <div className={`code-target ${state}`}>
       <span className="ct-icon">
-        {info ? "✓" : generating ? <span className="spinner" /> : "○"}
+        {isDone ? "✓" : generating ? <span className="spinner" /> : "○"}
       </span>
       <span className="ct-label">{label}</span>
       <span className="ct-status">
         {info
           ? `${info.chars.toLocaleString()} chars`
-          : generating
-            ? "writing…"
-            : "queued"}
+          : done
+            ? doneText ?? "done"
+            : generating
+              ? "writing…"
+              : "queued"}
       </span>
     </div>
   );

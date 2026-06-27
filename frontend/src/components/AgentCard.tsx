@@ -2,6 +2,9 @@ import type { AgentStatus } from "../types";
 
 const ICONS: Record<string, string> = {
   architect: "◆",
+  frontend: "▢",
+  backend: "{}",
+  devops: "⚙",
   developer: "</>",
   tester: "✓",
   deployment: "▲",
@@ -12,6 +15,9 @@ const ICONS: Record<string, string> = {
 
 const LABELS: Record<string, string> = {
   architect: "Architect",
+  frontend: "Frontend",
+  backend: "Backend",
+  devops: "DevOps",
   developer: "Developer",
   tester: "Tester",
   deployment: "Deployment",

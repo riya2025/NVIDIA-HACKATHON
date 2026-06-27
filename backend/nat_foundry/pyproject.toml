@@ -7,10 +7,10 @@ name = "nat-foundry"
 version = "0.1.0"
 description = "AI Foundry agents as NeMo Agent Toolkit functions"
 requires-python = ">=3.12,<3.14"
-dependencies = ["nvidia-nat[langchain]"]
+dependencies = ["nvidia-nat[langchain]", "langgraph"]
 
 [project.entry-points."nat.components"]
 nat_foundry = "nat_foundry.register"
 
 [tool.setuptools]
-packages = ["nat_foundry"]
+packages = ["nat_foundry", "langgraph_agent"]

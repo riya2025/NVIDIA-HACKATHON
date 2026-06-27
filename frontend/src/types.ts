@@ -2,7 +2,9 @@ export type AgentStatus = "idle" | "running" | "success" | "failed";
 
 export const STAGES = [
   "architect",
-  "developer",
+  "frontend",
+  "backend",
+  "devops",
   "tester",
   "deployment",
   "monitoring",

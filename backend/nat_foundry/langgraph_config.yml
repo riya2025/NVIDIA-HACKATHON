@@ -8,9 +8,10 @@ llms:
     model_name: nvidia/llama-3.3-nemotron-super-49b-v1.5
     temperature: 0.3
     max_tokens: 700
-    do_auto_retry: true
-    num_retries: 2
 
 workflow:
-  _type: ai_foundry_architect
-  llm_name: nemotron
+  _type: langgraph_wrapper
+  dependencies:
+    - ./nat_foundry/langgraph_agent
+  graph: nat_foundry/langgraph_agent/architect_graph.py:graph
+  env: .env

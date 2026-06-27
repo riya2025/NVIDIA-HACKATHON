@@ -1,26 +1,38 @@
-"""Developer Agent: real code generation with NVIDIA Nemotron.
+"""Code-generation agents: real codegen with NVIDIA NIM models.
 
-Unlike a fixed template, this agent reads the project's *requirement* (the user's
-description, refined by the Architect agent) and asks Nemotron to generate:
+Code generation is split across three agents that the orchestrator runs
+concurrently (asyncio.gather), so frontend, backend and deployment artifacts are
+produced in parallel:
 
-  - a tailored, runnable frontend (single-file React app, served live), and
-  - a real FastAPI backend (main.py) implementing the described API, plus
-    requirements.txt, Dockerfile and a README.
+  - FrontendAgent  -> a tailored, runnable single-file React app (served live).
+  - BackendAgent   -> a real FastAPI backend (main.py) + requirements.txt.
+  - DevOpsAgent    -> deployment artifacts (Dockerfile, docker-compose, README).
 
-The served app is the generated frontend; the backend is generated as real source
-artifacts that the Deployment agent can run / package for AWS (Phase 2).
+Each agent reads the project's *requirement* (the user's description, refined by
+the Architect agent) and writes only the files it owns. The served app is the
+generated frontend; the backend/devops files are real source artifacts the
+Deployment agent runs / packages for AWS (Phase 2).
 """
 from __future__ import annotations
 
 import asyncio
-import re
+import json
 from pathlib import Path
 from typing import Any, Dict
 
 from ..config import settings
-from ..local_deploy import APPS_ROOT, _slug, working_app_html, write_files
+from ..local_deploy import (
+    APPS_ROOT,
+    _slug,
+    backend_build,
+    npm_install,
+    vite_build,
+    working_app_html,
+    write_files,
+)
 from ..models import Stage
 from ..nvidia_client import nvidia
+from ..react_template import _STYLES_CSS, react_project_files
 from .base import BaseAgent
 
 
@@ -53,35 +65,37 @@ def _arch_text(arch: Dict[str, Any]) -> str:
 
 
 FRONTEND_SYSTEM = (
-    "You are a senior React engineer. Output ONLY JavaScript/JSX (no markdown fences, "
-    "no prose, no HTML, no <script> tags, no import/require, and DO NOT call "
-    "ReactDOM.render — the host page already mounts <App/>). Your code runs inside a "
-    "<script type='text/babel'> where these globals are ALREADY defined for you:\n"
-    "  React, ReactDOM\n"
-    "  hooks: useState, useEffect, useReducer, useContext, createContext, useRef, useMemo, useCallback\n"
-    "  router (react-router-dom v6): HashRouter, Routes, Route, Link, NavLink, useNavigate, Navigate, useParams\n"
-    "  exifr  (read GPS from an image File: `const d = await exifr.gps(file)` -> {latitude, longitude} or undefined)\n"
-    "  DEFAULT_LOCATION = { lat, lng }  (use this when a photo has no GPS)\n"
-    "  api(path, options)  (fetch helper to window.API_BASE; falls back to localStorage on failure)\n"
+    "You are a senior React engineer. Output ONLY the complete contents of a single "
+    "file `src/App.jsx` — no markdown fences, no prose, no explanation, no filename header.\n"
+    "This is a REAL Vite + React 18 project (ES modules), so you MUST use imports:\n"
+    "  import React, { useState, useEffect, useRef, useMemo, useReducer } from 'react';\n"
+    "  import { HashRouter, Routes, Route, Link, NavLink, useNavigate, useParams, Navigate } from 'react-router-dom';\n"
     "RULES:\n"
-    "- Define a top-level component named `App` that returns <HashRouter>...<Routes>...</Routes></HashRouter>.\n"
-    "- Use ONLY plain JSX elements (div, button, input, etc.) with className. DO NOT use Material-UI, "
-    "Chakra, Bootstrap, or any external component library (they are NOT loaded).\n"
-    "- Persist data in localStorage so the app works with no backend.\n"
+    "- `export default function App()` MUST return <HashRouter>...<Routes>...</Routes></HashRouter>.\n"
+    "- Define ALL sub-components in THIS SAME FILE. Do NOT import any local files "
+    "(no './pages', './store', etc.) — only 'react' and 'react-router-dom'.\n"
+    "- A global stylesheet is already loaded; style with className using these classes: "
+    "app, topbar, nav, container, wrap, card, row, btn, btn-primary, primary, input, label, "
+    "field, list, list-item, rec, badge, pill, muted, grid, stat, box, center, login.\n"
+    "- Persist data in localStorage so the app ALWAYS works with no backend.\n"
+    "- A FastAPI backend MAY be reachable at window.API_BASE (a string set on the page). "
+    "You may optionally fetch from it (e.g. `fetch(window.API_BASE + '/health')`) when "
+    "window.API_BASE is set, but you MUST wrap such calls in try/catch and fall back to "
+    "localStorage so the app fully works whether or not the API responds.\n"
     "- Implement EXACTLY the features in the requirement — no generic placeholder app.\n"
-    "- Reference the CSS classes provided by the host (app, topbar, nav, container, card, btn, "
-    "btn-primary, input, label, field, list, list-item, badge, muted, grid) for a clean look.\n"
-    "- Write complete, working code with no TODOs and no undefined references.\n"
-    "CRITICAL — your output MUST follow EXACTLY this shape (the host renders <App/>):\n"
-    "  function App() {\n"
-    "    return (\n"
-    "      <HashRouter>\n"
-    "        {/* topbar + <Routes>...</Routes> implementing the features */}\n"
-    "      </HashRouter>\n"
-    "    );\n"
-    "  }\n"
-    "The root component MUST be named exactly `App` (not Main, not Root, not PotholeApp) and "
-    "MUST render <HashRouter>. Do NOT use `export`, `export default`, or `import`."
+    "- Do NOT use Material-UI, Chakra, Bootstrap, antd or ANY external component library "
+    "(they are NOT installed and will FAIL the build).\n"
+    "- JSX comments MUST be written as {/* ... */}. NEVER put // or /* */ comments inside JSX tags.\n"
+    "- Write complete, COMPILING code: no TODOs, no undefined variables, no missing imports.\n"
+    "The default export MUST be a component named exactly `App` that renders <HashRouter>."
+)
+
+FRONTEND_FIX_SYSTEM = (
+    "You are a senior React engineer fixing a Vite build error in a single-file React "
+    "component. Output ONLY the corrected, complete contents of `src/App.jsx` — no "
+    "markdown fences, no prose. ES module imports only from 'react' and 'react-router-dom'; "
+    "`export default function App()`; JSX comments must be {/* ... */}; no external UI "
+    "libraries; no undefined references; no missing imports."
 )
 
 _BASE_CSS = """
@@ -113,270 +127,374 @@ input[type=file]{color:#9aa7b4}
 img.preview{max-width:100%;border-radius:10px;margin-top:10px}
 """
 
-_FRONTEND_SKELETON = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>__TITLE__</title>
-<script>
-/* AI Foundry client-error beacon: reports browser JS crashes to Monitoring/RCA. */
-window.__FOUNDRY__ = { base: "__FOUNDRY_BASE__", pid: "__PROJECT_ID__" };
-(function(){
-  var sent = false;
-  function report(message, stack){
-    if (sent || !window.__FOUNDRY__.pid) return; sent = true;
-    try {
-      fetch(window.__FOUNDRY__.base + "/api/projects/" + window.__FOUNDRY__.pid + "/client-error", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: String(message), stack: String(stack || "") })
-      });
-    } catch (e) {}
-  }
-  window.addEventListener("error", function(e){
-    report(e.message || "script error", (e.error && e.error.stack) || (e.filename + ":" + e.lineno));
-  });
-  window.addEventListener("unhandledrejection", function(e){
-    var r = e.reason || {}; report("unhandledrejection: " + (r.message || r), r.stack || "");
-  });
-})();
-</script>
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
-<script src="https://unpkg.com/exifr@7.1.3/dist/full.umd.js"></script>
-<style>__BASE_CSS__</style>
-</head>
-<body>
-<div id="root"></div>
-<script type="text/babel" data-presets="react">
-const { useState, useEffect, useReducer, useContext, createContext, useRef, useMemo, useCallback } = React;
-const DEFAULT_LOCATION = { lat: 28.6139, lng: 77.2090 };
+def _wants_map(project) -> bool:
+    text = (project.description or "") + " " + _arch_text(project.architecture or {})
+    return any(k in text.lower() for k in ("map", "location", "geo", "pothole", "track", "delivery"))
 
-/* ---- Built-in hash router (react-router v6 compatible subset, no CDN) ---- */
-const __RouterCtx = React.createContext({ path: '/', navigate: function(){} });
-function __norm(p){ if(p===undefined||p===null) return '/'; p=String(p); if(p.length>1&&p.endsWith('/')) p=p.slice(0,-1); if(!p.startsWith('/')) p='/'+p; return p; }
-function __getHash(){ var h=window.location.hash.replace(/^#/,''); if(!h) h='/'; if(!h.startsWith('/')) h='/'+h; return h; }
-function HashRouter(props){
-  const [path,setPath]=useState(__getHash());
-  useEffect(function(){ var on=function(){ setPath(__getHash()); }; window.addEventListener('hashchange',on); return function(){ window.removeEventListener('hashchange',on); }; },[]);
-  const navigate=useCallback(function(to){ if(typeof to==='number'){ window.history.go(to); return; } var t=String(to); if(!t.startsWith('/')) t='/'+t; window.location.hash=t; },[]);
-  return React.createElement(__RouterCtx.Provider,{ value:{ path:path, navigate:navigate } }, props.children);
-}
-const BrowserRouter = HashRouter;
-function useNavigate(){ return useContext(__RouterCtx).navigate; }
-function useLocation(){ return { pathname: useContext(__RouterCtx).path, hash: window.location.hash, search: '' }; }
-function useParams(){ return {}; }
-function Route(){ return null; }
-function Outlet(){ return null; }
-function Routes(props){
-  const cur=__norm(useContext(__RouterCtx).path);
-  let match=null, fallback=null;
-  React.Children.forEach(props.children,function(child){
-    if(!child||!child.props) return;
-    const p=child.props;
-    if(p.path==='*'){ fallback=p.element; return; }
-    const rp = p.index ? '/' : __norm(p.path);
-    if(rp===cur && match===null) match=p.element;
-  });
-  return match || fallback || null;
-}
-function Link(props){
-  const navigate=useNavigate();
-  const to=props.to;
-  const rest=Object.assign({},props); delete rest.to; delete rest.children;
-  rest.href='#'+__norm(to);
-  rest.onClick=function(e){ if(props.onClick) props.onClick(e); e.preventDefault(); navigate(to); };
-  return React.createElement('a',rest,props.children);
-}
-function NavLink(props){
-  const path=__norm(useContext(__RouterCtx).path);
-  const active=(path===__norm(props.to));
-  let cn=props.className;
-  if(typeof cn==='function') cn=cn({ isActive:active });
-  else if(active) cn=(cn?cn+' ':'')+'active';
-  const np=Object.assign({},props,{ className:cn });
-  return Link(np);
-}
-function Navigate(props){
-  const navigate=useNavigate();
-  useEffect(function(){ navigate(props.to); },[props.to]);
-  return null;
-}
-/* ------------------------------------------------------------------------ */
-async function api(path, options) {
-  if (!window.API_BASE) throw new Error("no api");
-  const res = await fetch(window.API_BASE + path, options);
-  if (!res.ok) throw new Error("api " + res.status);
-  return res.json();
-}
-try {
-// ===== AI-GENERATED APP CODE START =====
-__APP_CODE__
-// ===== AI-GENERATED APP CODE END =====
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(<App />);
-} catch (err) {
-  document.getElementById('root').innerHTML =
-    '<div class="container"><div class="card"><h2>App failed to start</h2>' +
-    '<pre class="muted">' + (err && err.message ? err.message : err) + '</pre></div></div>';
-  console.error(err);
-  try {
-    fetch(window.__FOUNDRY__.base + "/api/projects/" + window.__FOUNDRY__.pid + "/client-error", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: String(err && err.message ? err.message : err), stack: String(err && err.stack || "") })
-    });
-  } catch (e) {}
-}
-</script>
-</body>
-</html>
-"""
+
+def _vite_scaffold(project) -> Dict[str, str]:
+    """Fixed, known-good Vite + React project files. The model only authors
+    `src/App.jsx`; everything here is boilerplate that always builds.
+
+    `src/main.jsx` renders <App/> directly, so the generated App owns the
+    <HashRouter> (matching the codegen contract).
+    """
+    name = project.name
+    pkg = json.dumps(
+        {
+            "name": _slug(name),
+            "private": True,
+            "version": "0.1.0",
+            "type": "module",
+            "scripts": {"dev": "vite", "build": "vite build", "preview": "vite preview"},
+            "dependencies": {
+                "react": "^18.3.1",
+                "react-dom": "^18.3.1",
+                "react-router-dom": "^6.26.2",
+            },
+            "devDependencies": {
+                "@vitejs/plugin-react": "^4.3.1",
+                "vite": "^5.4.8",
+            },
+        },
+        indent=2,
+    )
+
+    leaflet = (
+        '    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />\n'
+        '    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>\n'
+        if _wants_map(project)
+        else ""
+    )
+    title = name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    index_html = (
+        '<!doctype html>\n<html lang="en">\n  <head>\n'
+        '    <meta charset="UTF-8" />\n'
+        '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n'
+        f"    <title>{title}</title>\n"
+        f"{leaflet}"
+        '  </head>\n  <body>\n    <div id="root"></div>\n'
+        '    <script type="module" src="/src/main.jsx"></script>\n'
+        "  </body>\n</html>\n"
+    )
+    main_jsx = (
+        "import React from 'react'\n"
+        "import ReactDOM from 'react-dom/client'\n"
+        "import App from './App.jsx'\n"
+        "import './styles.css'\n\n"
+        "ReactDOM.createRoot(document.getElementById('root')).render(\n"
+        "  <React.StrictMode>\n    <App />\n  </React.StrictMode>\n)\n"
+    )
+    vite_cfg = (
+        "import { defineConfig } from 'vite'\n"
+        "import react from '@vitejs/plugin-react'\n\n"
+        "export default defineConfig({ plugins: [react()] })\n"
+    )
+    return {
+        "package.json": pkg,
+        "vite.config.js": vite_cfg,
+        "index.html": index_html,
+        "src/main.jsx": main_jsx,
+        "src/styles.css": _BASE_CSS + "\n" + _STYLES_CSS,
+    }
+
+
+def _build_error(output: str) -> str:
+    """Pull a concise summary out of a Vite/Rollup build log.
+
+    Vite often prints a generic "error during build:" header followed by the real
+    message (file + reason) on the next line, so we include the following line too.
+    """
+    lines = [ln.strip() for ln in (output or "").splitlines() if ln.strip()]
+    for i, ln in enumerate(lines):
+        low = ln.lower()
+        if "error" in low and "0 error" not in low:
+            summary = ln
+            if low.rstrip().endswith("error during build:") and i + 1 < len(lines):
+                summary = f"{ln} {lines[i + 1]}"
+            return summary[:240]
+    return lines[-1][:240] if lines else "unknown build error"
+
+
+def _backend_error(output: str) -> str:
+    """Summarize a py_compile / import traceback to one informative line."""
+    lines = [ln.strip() for ln in (output or "").splitlines() if ln.strip()]
+    if not lines:
+        return "unknown backend error"
+    # The final traceback line is usually `ErrorType: message`.
+    for ln in reversed(lines):
+        if any(tok in ln for tok in ("Error:", "Error ", "assert", "SyntaxError")):
+            return ln[:240]
+    return lines[-1][:240]
 
 BACKEND_SYSTEM = (
     "You are a senior backend engineer. You output ONE complete FastAPI application "
     "(main.py) and NOTHING else (no markdown fences, no prose). Use FastAPI + Pydantic. "
-    "Enable permissive CORS. Use an in-memory store (or sqlite via sqlite3) so it runs "
-    "with zero external services. Implement EXACTLY the endpoints implied by the "
+    "Enable permissive CORS. Use an in-memory store (or sqlite via the stdlib sqlite3) so "
+    "it runs with zero external services. Implement EXACTLY the endpoints implied by the "
     "requirement. For email/2FA, generate a 6-digit code and RETURN it in the response "
     "(dev mode) with a comment that production would email it. Include a /health "
-    "endpoint. Make it runnable with: uvicorn main:app."
+    "endpoint. Expose the app as a module-level `app = FastAPI(...)` so it runs with "
+    "`uvicorn main:app`.\n"
+    "IMPORTANT: import ONLY the Python standard library plus fastapi, pydantic and starlette "
+    "(already installed). Do NOT import third-party packages such as sqlalchemy, "
+    "jose/python-jose, passlib, bcrypt, requests, etc. — they are not installed and will "
+    "break the build. The file MUST be complete and compile (every brace/paren/bracket "
+    "closed) — never stop mid-statement."
+)
+
+BACKEND_FIX_SYSTEM = (
+    "You are a senior backend engineer fixing a Python/FastAPI error in a single main.py. "
+    "Output ONLY the corrected, complete main.py — no markdown fences, no prose. Use only "
+    "the standard library plus fastapi/pydantic/starlette; expose a module-level "
+    "`app = FastAPI(...)`; the file MUST be complete and compile (no missing imports, no "
+    "undefined names, every bracket closed) — never stop mid-statement."
 )
 
 
-class DeveloperAgent(BaseAgent):
-    stage = Stage.developer
-    title = "Developer Agent"
+class FrontendAgent(BaseAgent):
+    """Generates a real Vite + React project, then build-gates it.
 
-    async def _preview(self, path: str, code: str, lines: int = 14) -> None:
-        """Stream a peek at the generated code so the UI shows what's inside."""
-        head = "\n".join(code.splitlines()[:lines])
-        await self.emit(
-            "code_preview",
-            f"Generated {path}",
-            {"path": path, "preview": head, "chars": len(code)},
-        )
-        await self.step(f"--- {path} ({len(code):,} chars) ---")
-        for ln in head.splitlines():
-            self.state.logs.append(ln)
-            await self.emit("agent_log", ln)
-        await asyncio.sleep(0.2)
+    Flow: scaffold a known-good Vite project -> the model authors `src/App.jsx`
+    -> `npm install` -> `vite build` (real compile gate). If the build fails, the
+    error is fed back to the model to auto-fix the code (real code self-healing),
+    up to `frontend_build_retries` times, before falling back to a verified
+    scaffold. The output is genuine React source, served by the Vite dev server.
+    """
+
+    stage = Stage.frontend
+    title = "Frontend Agent"
 
     async def execute(self) -> Dict[str, Any]:
         req = self.project.description
-        arch = self.project.architecture or {}
-        arch_summary = _arch_text(arch)
+        arch_summary = _arch_text(self.project.architecture or {})
+        app_dir: Path = APPS_ROOT / _slug(self.project.name)
 
         await self.step(f"Reading requirement: {req[:90]}...")
         await self.step(f"Target stack (Architect): {arch_summary}")
 
-        frontend_prompt = (
+        # 1) Lay down the known-good Vite scaffold (everything except src/App.jsx).
+        write_files(self.project, _vite_scaffold(self.project), ensure_index=False)
+
+        # 2) Ask the model for a real, tailored src/App.jsx.
+        await self.step(f"Generating React app (src/App.jsx) with {settings.codegen_model}...")
+        app_code = await self._generate(req)
+
+        # 3) Install the toolchain (reused across build retries / heals).
+        await self.step("Installing dependencies (react, react-router-dom, vite)...")
+        deps_ok = await asyncio.to_thread(npm_install, app_dir)
+        if not deps_ok:
+            await self.step("npm unavailable — serving a static fallback app instead")
+            fallback_html = working_app_html(self.project)
+            write_files(self.project, {"index.html": fallback_html}, ensure_index=True)
+            await self.preview("frontend (static fallback)", fallback_html)
+            return {
+                "files": ["index.html"],
+                "frontend": "static fallback (npm unavailable)",
+                "frontend_fallback": True,
+            }
+
+        # 4) Real compile gate + auto-fix loop (code self-healing at build time).
+        build_ok = False
+        used_fallback = False
+        for attempt in range(1, settings.frontend_build_retries + 2):
+            write_files(self.project, {"src/App.jsx": app_code}, ensure_index=False)
+            await self.step(f"Compiling with Vite (attempt {attempt})...")
+            build_ok, output = await asyncio.to_thread(vite_build, app_dir)
+            if build_ok:
+                await self.step(f"Vite build passed ({len(app_code):,} chars) — code compiles cleanly")
+                break
+            await self.step(f"Build failed: {_build_error(output)}")
+            if attempt > settings.frontend_build_retries:
+                break
+            await self.step(f"Auto-fixing src/App.jsx from the build error (self-heal {attempt})...")
+            app_code = await self._repair(req, app_code, output)
+
+        # 5) Couldn't make the generated code compile — fall back to a verified scaffold.
+        if not build_ok:
+            await self.step("Auto-fix exhausted — falling back to a verified React scaffold")
+            fb_files = react_project_files(self.project)
+            write_files(self.project, fb_files, ensure_index=True)
+            ok, _ = await asyncio.to_thread(vite_build, app_dir)
+            used_fallback = True
+            app_code = fb_files.get("src/App.jsx", app_code)
+            await self.step("Verified scaffold build " + ("passed" if ok else "completed"))
+
+        await self.preview("frontend (src/App.jsx)", app_code)
+        await self.step(f"wrote React (Vite) project -> {app_dir}")
+        return {
+            "files": ["index.html", "package.json", "vite.config.js", "src/main.jsx", "src/App.jsx"],
+            "frontend": "React (Vite multi-file project, build-verified)",
+            "frontend_fallback": used_fallback,
+        }
+
+    async def _generate(self, req: str) -> str:
+        prompt = (
             f"Application name: {self.project.name}\n"
             f"Requirement (implement these features precisely):\n{req}\n\n"
-            "Write the React component code (define `App` and any sub-components) now. "
-            "Remember: JSX only, no HTML/script tags, no imports, no ReactDOM.render."
+            "Write the complete src/App.jsx now (imports + App + sub-components in one file). "
+            "The file MUST be complete and balanced (every { ( [ closed) — never stop mid-statement."
         )
-        backend_prompt = (
+        raw = await asyncio.to_thread(
+            nvidia.complete_code,
+            prompt,
+            system=FRONTEND_SYSTEM,
+            model=settings.codegen_model,
+            max_tokens=4096,
+            temperature=0.4,
+        )
+        return _strip_fences(raw)
+
+    async def _repair(self, req: str, code: str, build_output: str) -> str:
+        prompt = (
+            f'The src/App.jsx for "{self.project.name}" fails to build with Vite.\n\n'
+            f"BUILD ERROR:\n{build_output[-1800:]}\n\n"
+            f"CURRENT src/App.jsx:\n{code[:9000]}\n\n"
+            "Return the COMPLETE corrected src/App.jsx (the whole file). Keep the same "
+            "features and requirement. Fix the error above. The file MUST be complete "
+            "(every brace/paren/bracket closed) — never stop mid-statement."
+        )
+        raw = await asyncio.to_thread(
+            nvidia.complete_code,
+            prompt,
+            system=FRONTEND_FIX_SYSTEM,
+            model=settings.codegen_model,
+            max_tokens=4096,
+            temperature=0.2,
+        )
+        fixed = _strip_fences(raw)
+        return fixed if len(fixed) > 120 else code
+
+
+class BackendAgent(BaseAgent):
+    """Generates the FastAPI backend (main.py) and build-gates it.
+
+    The generated main.py is py_compiled and import-booted (see local_deploy.
+    backend_build). On failure the error is fed back to the model to auto-fix the
+    code, up to `backend_build_retries` times, before falling back to a minimal
+    FastAPI scaffold that always compiles.
+    """
+
+    stage = Stage.backend
+    title = "Backend Agent"
+
+    async def execute(self) -> Dict[str, Any]:
+        req = self.project.description
+        app_dir: Path = APPS_ROOT / _slug(self.project.name)
+
+        # requirements.txt is fixed boilerplate; write it up front.
+        write_files(
+            self.project,
+            {
+                "backend/requirements.txt": (
+                    "fastapi==0.138.0\nuvicorn[standard]==0.49.0\n"
+                    "pydantic==2.11.0\npython-multipart==0.0.9\n"
+                )
+            },
+            ensure_index=False,
+        )
+
+        await self.step(f"Reading requirement: {req[:90]}...")
+        await self.step(f"Generating FastAPI backend with {settings.codegen_model}...")
+        backend = await self._generate(req)
+        if "fastapi" not in backend.lower():
+            await self.step("Backend codegen incomplete — using minimal FastAPI scaffold")
+            backend = _fallback_backend(self.project.name)
+
+        # Real compile gate + auto-fix loop (backend code self-healing).
+        build_ok = False
+        used_fallback = False
+        for attempt in range(1, settings.backend_build_retries + 2):
+            write_files(self.project, {"backend/main.py": backend}, ensure_index=False)
+            await self.step(f"Compiling backend (py_compile + import, attempt {attempt})...")
+            build_ok, output = await asyncio.to_thread(backend_build, app_dir)
+            if build_ok:
+                await self.step(f"Backend compiles cleanly — {output}")
+                break
+            await self.step(f"Backend build failed: {_backend_error(output)}")
+            if attempt > settings.backend_build_retries:
+                break
+            await self.step(f"Auto-fixing backend/main.py from the error (self-heal {attempt})...")
+            backend = await self._repair(req, backend, output)
+
+        if not build_ok:
+            await self.step("Auto-fix exhausted — falling back to a minimal FastAPI scaffold")
+            backend = _fallback_backend(self.project.name)
+            write_files(self.project, {"backend/main.py": backend}, ensure_index=False)
+            used_fallback = True
+
+        await self.preview("backend/main.py", backend)
+        await self.step("wrote backend/main.py + backend/requirements.txt")
+
+        return {
+            "files": ["backend/main.py", "backend/requirements.txt"],
+            "backend": "FastAPI (backend/main.py, compile-verified)",
+            "backend_fallback": used_fallback,
+        }
+
+    async def _generate(self, req: str) -> str:
+        arch_summary = _arch_text(self.project.architecture or {})
+        prompt = (
             f"Application name: {self.project.name}\n"
             f"Requirement (implement the matching API precisely):\n{req}\n\n"
             f"Architecture context: {arch_summary}\n\n"
             "Generate the complete FastAPI main.py now."
         )
-
-        await self.step(f"Generating frontend + backend with {settings.codegen_model} (concurrent)...")
-        frontend_raw, backend_raw = await asyncio.gather(
-            asyncio.to_thread(
-                nvidia.complete,
-                frontend_prompt,
-                system=FRONTEND_SYSTEM,
-                model=settings.codegen_model,
-                max_tokens=5000,
-                temperature=0.4,
-                thinking=False,
-            ),
-            asyncio.to_thread(
-                nvidia.complete,
-                backend_prompt,
-                system=BACKEND_SYSTEM,
-                model=settings.codegen_model,
-                max_tokens=2500,
-                temperature=0.3,
-                thinking=False,
-            ),
+        raw = await asyncio.to_thread(
+            nvidia.complete_code,
+            prompt,
+            system=BACKEND_SYSTEM,
+            model=settings.codegen_model,
+            max_tokens=4096,
+            temperature=0.3,
         )
+        return _strip_fences(raw)
 
-        app_code = _strip_fences(frontend_raw)
-        backend = _strip_fences(backend_raw)
+    async def _repair(self, req: str, code: str, build_output: str) -> str:
+        prompt = (
+            f'The backend/main.py for "{self.project.name}" fails to build.\n\n'
+            f"ERROR:\n{build_output[-1800:]}\n\n"
+            f"CURRENT main.py:\n{code[:9000]}\n\n"
+            "Return the COMPLETE corrected main.py (the whole file). Keep the same "
+            "endpoints and requirement. Fix the error above."
+        )
+        raw = await asyncio.to_thread(
+            nvidia.complete_code,
+            prompt,
+            system=BACKEND_FIX_SYSTEM,
+            model=settings.codegen_model,
+            max_tokens=4096,
+            temperature=0.2,
+        )
+        fixed = _strip_fences(raw)
+        return fixed if len(fixed) > 80 else code
 
-        # Salvage common deviations rather than discarding otherwise-good code:
-        #  - only HashRouter is a provided global (rewrite BrowserRouter), and
-        #  - the inline Babel runtime has no module system, so strip export/import.
-        app_code = app_code.replace("BrowserRouter", "HashRouter")
-        app_code = re.sub(r"^\s*export\s+default\s+", "", app_code, flags=re.MULTILINE)
-        app_code = re.sub(r"^\s*export\s+", "", app_code, flags=re.MULTILINE)
 
-        used_fallback = False
-        # The generated code must define an App component and use the router.
-        reason = None
-        if len(app_code) < 200:
-            reason = f"too short ({len(app_code)} chars)"
-        elif "App" not in app_code:
-            reason = "no `App` component defined"
-        elif "HashRouter" not in app_code:
-            reason = "no router (HashRouter) found"
-        if reason:
-            await self.step(f"Frontend codegen incomplete ({reason}) — using fallback app")
-            frontend = working_app_html(self.project)
-            used_fallback = True
-        else:
-            frontend = (
-                _FRONTEND_SKELETON.replace("__TITLE__", self.project.name)
-                .replace("__BASE_CSS__", _BASE_CSS)
-                .replace("__FOUNDRY_BASE__", settings.public_api_base)
-                .replace("__PROJECT_ID__", self.project.id)
-                .replace("__APP_CODE__", app_code)
-            )
-            await self.step(
-                f"Frontend generated ({len(app_code):,} chars of React) — tailored to your prompt"
-            )
+class DevOpsAgent(BaseAgent):
+    """Generates deployment artifacts (Dockerfile, docker-compose, README)."""
 
-        if "fastapi" not in backend.lower():
-            await self.step("Backend codegen incomplete — writing minimal FastAPI scaffold")
-            backend = _fallback_backend(self.project.name)
-        else:
-            await self.step(f"Backend generated ({len(backend):,} chars) — FastAPI main.py")
+    stage = Stage.devops
+    title = "DevOps Agent"
 
-        await self._preview("frontend (React App)", app_code if not used_fallback else frontend)
-        await self._preview("backend/main.py", backend)
+    async def execute(self) -> Dict[str, Any]:
+        arch_summary = _arch_text(self.project.architecture or {})
+
+        await self.step("Generating deployment artifacts (Dockerfile, compose, README)...")
 
         files = {
-            "index.html": frontend,
-            "backend/main.py": backend,
-            "backend/requirements.txt": (
-                "fastapi==0.138.0\nuvicorn[standard]==0.49.0\n"
-                "pydantic==2.11.0\npython-multipart==0.0.9\n"
-            ),
             "backend/Dockerfile": _dockerfile(),
+            "backend/.dockerignore": "__pycache__/\n*.pyc\n.env\n.venv/\nnode_modules/\n",
+            "docker-compose.yml": _compose(self.project),
             "README.md": _readme(self.project, arch_summary),
         }
-
-        # Remove a stale React-template package.json so the served app is the
-        # generated single-file frontend (static serve), not an old Vite project.
-        stale_pkg = APPS_ROOT / _slug(self.project.name) / "package.json"
-        if stale_pkg.exists():
-            stale_pkg.unlink()
-
-        app_dir: Path = write_files(self.project, files)
+        write_files(self.project, files, ensure_index=False)
         for path in files:
             await self.step(f"wrote {path}")
-        await self.step(f"Project written -> {app_dir}")
+        await self.step("Deployment artifacts ready for ECS/Fargate packaging")
 
         return {
             "files": list(files.keys()),
-            "file_count": len(files),
-            "frontend": "React (single-file, served live)",
-            "backend": "FastAPI (backend/main.py)",
-            "frontend_fallback": used_fallback,
+            "deployment": "Dockerfile + docker-compose + README",
         }
 
 
@@ -402,6 +520,24 @@ def _dockerfile() -> str:
         "COPY . .\n"
         "EXPOSE 8000\n"
         'CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]\n'
+    )
+
+
+def _compose(project) -> str:
+    service = _slug(project.name)
+    return (
+        "version: \"3.9\"\n"
+        "services:\n"
+        f"  {service}-api:\n"
+        "    build: ./backend\n"
+        "    ports:\n"
+        "      - \"8000:8000\"\n"
+        "    restart: unless-stopped\n"
+        "    healthcheck:\n"
+        "      test: [\"CMD\", \"python\", \"-c\", \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\"]\n"
+        "      interval: 30s\n"
+        "      timeout: 5s\n"
+        "      retries: 3\n"
     )
 
 

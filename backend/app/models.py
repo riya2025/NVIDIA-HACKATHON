@@ -11,7 +11,11 @@ from pydantic import BaseModel, Field
 
 class Stage(str, Enum):
     architect = "architect"
-    developer = "developer"
+    # Code generation is split across three agents that run concurrently.
+    frontend = "frontend"
+    backend = "backend"
+    devops = "devops"
+    developer = "developer"  # retained for backward compatibility (unused by pipeline)
     tester = "tester"
     deployment = "deployment"
     monitoring = "monitoring"
@@ -68,6 +72,8 @@ class Project(BaseModel):
     agents: Dict[str, AgentState] = Field(default_factory=dict)
     architecture: Optional[Dict[str, Any]] = None
     deploy_url: Optional[str] = None
+    api_url: Optional[str] = None
+    database_url: Optional[str] = None
     metrics: Metrics = Field(default_factory=Metrics)
     incidents: List[Incident] = Field(default_factory=list)
     pipeline_status: str = "pending"  # pending|running|live|degraded|healed|failed

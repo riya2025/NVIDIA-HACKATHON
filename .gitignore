@@ -25,6 +25,11 @@ build/
 .DS_Store
 Thumbs.db
 
+# Caches
+.cache/
+*.sqlite
+*.sqlite3
+
 # Logs & artifacts
 *.log
 .coverage
