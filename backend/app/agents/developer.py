@@ -32,7 +32,13 @@ from ..local_deploy import (
 )
 from ..models import Stage
 from ..nvidia_client import nvidia
-from ..react_template import _STYLES_CSS, react_project_files
+from ..react_template import (
+    _STYLES_CSS,
+    _as_text,
+    compose_readme,
+    react_project_files,
+    scaffold_user_guide,
+)
 from .base import BaseAgent
 
 
@@ -62,6 +68,31 @@ def _arch_text(arch: Dict[str, Any]) -> str:
         if v:
             parts.append(f"{k}: {v if not isinstance(v, dict) else v.get('technology', v)}")
     return "; ".join(parts) if parts else "frontend: React; backend: FastAPI; database: SQLite"
+
+
+def _stack(project) -> Dict[str, str]:
+    """Architecture choices as a flat {layer: text} map for the README table."""
+    arch = project.architecture or {}
+    return {k: _as_text(arch.get(k)) for k in ("frontend", "backend", "database", "deployment")}
+
+
+README_SYSTEM = (
+    "You are a technical writer creating the 'how to use and test' part of a README "
+    "for a web app, aimed at a non-technical person who will click around to confirm "
+    "the app works. You are given the COMPLETE React source (src/App.jsx). Write "
+    "concise GitHub-flavored Markdown that:\n"
+    "1. Begins with a `## Using the app` heading, then walks through EACH screen / page "
+    "/ view the app actually has. For each one, list in plain language what the key "
+    "buttons, links, inputs and controls do. Describe ONLY features that genuinely exist "
+    "in the code — never invent pages or buttons.\n"
+    "2. Ends with a `## Quick test` heading followed by a numbered checklist (4-7 short "
+    "steps) walking the reader through the main happy path to verify the app end to end, "
+    "including confirming data appears where expected. If the code calls the backend "
+    "(e.g. fetch / window.API_BASE), add a step to confirm the backend responds.\n"
+    "Keep it tight and skimmable. Output ONLY the Markdown — no code fences around the "
+    "whole thing, no preamble, no sign-off. Do NOT include install, build, or deployment "
+    "instructions; those are added separately."
+)
 
 
 FRONTEND_SYSTEM = (
@@ -128,7 +159,13 @@ img.preview{max-width:100%;border-radius:10px;margin-top:10px}
 """
 
 def _wants_map(project) -> bool:
-    text = (project.description or "") + " " + _arch_text(project.architecture or {})
+    # Map support is a FRONTEND feature, so detect it from the description + the
+    # frontend layer only — matching react_template.react_project_files() and
+    # local_deploy.working_app_html(). Using all architecture layers here caused
+    # inconsistent use_map values (e.g. "delivery"/"track" in the backend/database
+    # layer would inject Leaflet and a README map note the scaffold doesn't have).
+    arch = project.architecture or {}
+    text = (project.description or "") + " " + _as_text(arch.get("frontend", ""))
     return any(k in text.lower() for k in ("map", "location", "geo", "pothole", "track", "delivery"))
 
 
@@ -288,8 +325,9 @@ class FrontendAgent(BaseAgent):
             fallback_html = working_app_html(self.project)
             write_files(self.project, {"index.html": fallback_html}, ensure_index=True)
             await self.preview("frontend (static fallback)", fallback_html)
+            await self._write_readme(app_code, used_fallback=True)
             return {
-                "files": ["index.html"],
+                "files": ["index.html", "README.md"],
                 "frontend": "static fallback (npm unavailable)",
                 "frontend_fallback": True,
             }
@@ -321,12 +359,58 @@ class FrontendAgent(BaseAgent):
             await self.step("Verified scaffold build " + ("passed" if ok else "completed"))
 
         await self.preview("frontend (src/App.jsx)", app_code)
+        await self._write_readme(app_code, used_fallback=used_fallback)
         await self.step(f"wrote React (Vite) project -> {app_dir}")
         return {
-            "files": ["index.html", "package.json", "vite.config.js", "src/main.jsx", "src/App.jsx"],
+            "files": ["index.html", "package.json", "vite.config.js", "src/main.jsx", "src/App.jsx", "README.md"],
             "frontend": "React (Vite multi-file project, build-verified)",
             "frontend_fallback": used_fallback,
         }
+
+    async def _write_readme(self, app_code: str, used_fallback: bool) -> None:
+        """Generate the user-facing README (usage walkthrough + test checklist).
+
+        For AI-generated apps the guide is authored by the model FROM the actual
+        `src/App.jsx`, so it describes whatever pages/buttons that specific app has.
+        For the fixed fallback scaffold (or when the model guide is unavailable) we
+        use the accurate scaffold walkthrough instead.
+        """
+        guide = ""
+        if not used_fallback and nvidia.live:
+            await self.step("Writing a usage & test guide (README) from the generated code...")
+            guide = await self._guide(app_code)
+        if not guide:
+            guide = scaffold_user_guide(_wants_map(self.project))
+        readme = compose_readme(
+            self.project.name, self.project.description, _stack(self.project), guide
+        )
+        write_files(self.project, {"README.md": readme}, ensure_index=False)
+        await self.step("wrote README.md (usage & test guide)")
+
+    async def _guide(self, app_code: str) -> str:
+        """Ask the model for a 'how to use / test' guide tailored to this app's code."""
+        prompt = (
+            f"Application name: {self.project.name}\n"
+            f"What it's meant to do: {self.project.description}\n\n"
+            "Complete src/App.jsx for the app:\n\n"
+            f"{app_code[:12000]}\n\n"
+            "Write the `## Using the app` walkthrough and `## Quick test` checklist now."
+        )
+        raw = await asyncio.to_thread(
+            nvidia.complete,
+            prompt,
+            system=README_SYSTEM,
+            model=settings.codegen_model,
+            max_tokens=1200,
+            temperature=0.3,
+        )
+        text = (raw or "").strip()
+        if text.startswith("```"):
+            text = _strip_fences(text).strip()
+        # Reject empty / demo-mode canned output so we fall back to the scaffold guide.
+        if len(text) < 80 or text.lower().startswith("[demo]"):
+            return ""
+        return text
 
     async def _generate(self, req: str) -> str:
         prompt = (
@@ -471,21 +555,22 @@ class BackendAgent(BaseAgent):
 
 
 class DevOpsAgent(BaseAgent):
-    """Generates deployment artifacts (Dockerfile, docker-compose, README)."""
+    """Generates deployment artifacts (Dockerfile, docker-compose).
+
+    The user-facing README is authored by the Frontend agent (it owns the app code
+    and tailors the usage guide to it), so DevOps does not write README.md.
+    """
 
     stage = Stage.devops
     title = "DevOps Agent"
 
     async def execute(self) -> Dict[str, Any]:
-        arch_summary = _arch_text(self.project.architecture or {})
-
-        await self.step("Generating deployment artifacts (Dockerfile, compose, README)...")
+        await self.step("Generating deployment artifacts (Dockerfile, compose)...")
 
         files = {
             "backend/Dockerfile": _dockerfile(),
             "backend/.dockerignore": "__pycache__/\n*.pyc\n.env\n.venv/\nnode_modules/\n",
             "docker-compose.yml": _compose(self.project),
-            "README.md": _readme(self.project, arch_summary),
         }
         write_files(self.project, files, ensure_index=False)
         for path in files:
@@ -494,7 +579,7 @@ class DevOpsAgent(BaseAgent):
 
         return {
             "files": list(files.keys()),
-            "deployment": "Dockerfile + docker-compose + README",
+            "deployment": "Dockerfile + docker-compose",
         }
 
 
@@ -541,25 +626,3 @@ def _compose(project) -> str:
     )
 
 
-def _readme(project, arch_summary: str) -> str:
-    return (
-        f"# {project.name}\n\n"
-        f"{project.description}\n\n"
-        "_Generated by AI Foundry (NVIDIA Nemotron)._\n\n"
-        f"**Architecture:** {arch_summary}\n\n"
-        "## Run the frontend\n"
-        "Just open `index.html` in a browser (it is served automatically by the platform).\n\n"
-        "## Run the backend (FastAPI)\n"
-        "```bash\n"
-        "cd backend\n"
-        "pip install -r requirements.txt\n"
-        "uvicorn main:app --reload\n"
-        "```\n"
-        "The API runs at http://localhost:8000 (see `/docs` for Swagger UI).\n\n"
-        "## Deploy to AWS (Phase 2)\n"
-        "```bash\n"
-        "cd backend\n"
-        "docker build -t app .\n"
-        "# push to ECR and run on ECS Fargate behind an ALB\n"
-        "```\n"
-    )
