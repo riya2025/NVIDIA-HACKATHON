@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import __version__
+from . import __version__, watchdog
 from .cache import install_langchain_llm_cache
 from .config import settings
 from .events import bus
@@ -16,10 +17,18 @@ from .nvidia_client import nvidia
 from .orchestrator import report_client_error, run_build_pipeline, trigger_incident
 from pydantic import BaseModel
 
-app = FastAPI(title="AI Foundry Control Plane", version=__version__)
 
-# Cache ChatNVIDIA (RCA ReAct agent) responses via LangChain's global cache.
-install_langchain_llm_cache()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Cache ChatNVIDIA (RCA ReAct agent) responses via LangChain's global cache.
+    install_langchain_llm_cache()
+    # Continuous Monitoring + RCA + Self-Healing for the whole app lifetime.
+    watchdog.start()
+    yield
+    await watchdog.stop()
+
+
+app = FastAPI(title="AI Foundry Control Plane", version=__version__, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

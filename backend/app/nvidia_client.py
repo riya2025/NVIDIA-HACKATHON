@@ -163,15 +163,15 @@ def _canned(prompt: str, system: str) -> str:
     blob = (system + " " + prompt).lower()
     if "architect" in blob:
         return (
-            '{"frontend": "Next.js", "backend": "FastAPI", "database": "PostgreSQL", '
-            '"deployment": "Docker + AWS ECS", '
-            '"rationale": "Fast-to-ship SaaS stack; ECS Fargate for self-healing demo."}'
+            '{"frontend": "React (Vite)", "backend": "FastAPI", "database": "PostgreSQL (Render)", '
+            '"deployment": "Docker containers -> Vercel (frontend) + Render (backend + Postgres)", '
+            '"rationale": "Fast-to-ship stack; Render redeploys power the self-healing demo."}'
         )
     if "root cause" in blob or "rca" in blob:
         return (
-            "Root cause: backend ECS task exited (exit code 137 / OOM). ALB target "
-            "became unhealthy and /health returned 503. Recommended: roll back to the "
-            "previous task-definition revision and raise the memory limit."
+            "Root cause: backend container exited (exit code 137 / OOM). The Render "
+            "health check on /health returned 503. Recommended: redeploy the previous "
+            "healthy revision and raise the instance memory."
         )
     return "[demo] " + prompt[:200]
 

@@ -13,19 +13,43 @@ reasoning completion via the existing NIM client, so the demo never breaks.
 """
 from __future__ import annotations
 
-# Corporate networks often intercept TLS; trust the OS store so ChatNVIDIA calls
-# validate cleanly. Best-effort and harmless if truststore isn't installed.
-try:  # pragma: no cover - best effort
-    import truststore
-
-    truststore.inject_into_ssl()
-except Exception:  # noqa: BLE001
-    pass
-
 from typing import Any, Dict, List
 
 from ..config import settings
 from ..logging_config import log
+
+# TLS handling for the ReAct path's ChatNVIDIA client. Unlike our httpx-based
+# NIM client, ChatNVIDIA talks over aiohttp/urllib and ignores our insecure-SSL
+# flag, so on SSL-intercepting networks (corporate proxy / antivirus) its calls
+# fail cert verification. When tls_verify_off is set we disable verification for
+# the default SSL context the aiohttp/urllib clients build (DEV ONLY); otherwise
+# we trust the OS cert store via truststore so calls validate cleanly.
+if settings.tls_verify_off:  # pragma: no cover - dev-only network shim
+    import ssl
+
+    try:
+        ssl._create_default_https_context = ssl._create_unverified_context  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        _orig_ctx = ssl.create_default_context
+
+        def _unverified_ctx(*args, **kwargs):  # noqa: ANN001, ANN202
+            ctx = _orig_ctx(*args, **kwargs)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return ctx
+
+        ssl.create_default_context = _unverified_ctx  # type: ignore[assignment]
+    except Exception:  # noqa: BLE001
+        pass
+else:
+    try:
+        import truststore
+
+        truststore.inject_into_ssl()
+    except Exception:  # noqa: BLE001
+        pass
 from ..models import Incident, Stage
 from ..nvidia_client import nvidia
 from .base import BaseAgent
@@ -46,7 +70,7 @@ class RCAAgent(BaseAgent):
     def __init__(self, project, incident: Incident, logs: str = "") -> None:
         super().__init__(project)
         self.incident = incident
-        self.logs = logs or "ECS task exit 137, ALB target unhealthy, 503s."
+        self.logs = logs or "Render web service exit 137 (OOM), /health unhealthy, 503s."
 
     async def execute(self) -> Dict[str, Any]:
         await self.step(f"Investigating incident: {self.incident.title}")
@@ -89,7 +113,7 @@ class RCAAgent(BaseAgent):
         @tool
         def query_incident_history(query: str) -> str:
             """Search past incidents for similar root causes. Pass a short
-            description of the current symptom (e.g. '503 OOM ECS task exit')."""
+            description of the current symptom (e.g. '503 OOM container exit')."""
             matches = search_incidents(store, query, exclude_id=incident_id)
             if not matches:
                 return "No similar past incidents found."

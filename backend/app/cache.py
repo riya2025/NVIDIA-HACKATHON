@@ -130,22 +130,32 @@ def install_langchain_llm_cache() -> None:
         return
     backend = (settings.cache_backend or "memory").lower()
     try:
+        from langchain_core.caches import InMemoryCache
         from langchain_core.globals import set_llm_cache
 
+        cache = None
         if backend == "sqlite":
-            from langchain_community.cache import SQLiteCache
+            try:
+                from langchain_community.cache import SQLiteCache
 
-            Path(settings.cache_path).parent.mkdir(parents=True, exist_ok=True)
-            set_llm_cache(SQLiteCache(database_path=settings.cache_path))
+                Path(settings.cache_path).parent.mkdir(parents=True, exist_ok=True)
+                cache = SQLiteCache(database_path=settings.cache_path)
+            except Exception:  # noqa: BLE001
+                # langchain_community not installed -> use the in-memory cache
+                # (only needs langchain_core, always present). No noisy warning.
+                cache, backend = InMemoryCache(), "memory (sqlite backend unavailable)"
         elif backend == "redis":
-            import redis  # type: ignore
-            from langchain_community.cache import RedisCache
+            try:
+                import redis  # type: ignore
+                from langchain_community.cache import RedisCache
 
-            set_llm_cache(RedisCache(redis.Redis.from_url(settings.redis_url)))
+                cache = RedisCache(redis.Redis.from_url(settings.redis_url))
+            except Exception:  # noqa: BLE001
+                cache, backend = InMemoryCache(), "memory (redis backend unavailable)"
         else:
-            from langchain_core.caches import InMemoryCache
-
-            set_llm_cache(InMemoryCache())
+            cache = InMemoryCache()
+        set_llm_cache(cache)
         log.info("LangChain LLM cache installed (backend={})", backend)
     except Exception as exc:  # noqa: BLE001
-        log.warning("Could not install LangChain LLM cache ({}); continuing without it", exc)
+        # Truly couldn't set any cache (e.g. langchain_core missing) — not fatal.
+        log.debug("LangChain LLM cache not installed ({}); continuing without it", exc)

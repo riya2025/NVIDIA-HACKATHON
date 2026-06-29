@@ -49,6 +49,10 @@ class AgentState(BaseModel):
 class Incident(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:8])
     title: str
+    # Which platform/component failed: backend | frontend | database. Lets the
+    # Self-Healing agent pick the right recovery (Render redeploy vs Vercel
+    # redeploy vs container restart).
+    component: str = "backend"
     root_cause: Optional[str] = None
     action: Optional[str] = None
     resolved: bool = False
@@ -71,9 +75,19 @@ class Project(BaseModel):
     created_at: float = Field(default_factory=time.time)
     agents: Dict[str, AgentState] = Field(default_factory=dict)
     architecture: Optional[Dict[str, Any]] = None
+    # Primary (embedded + watchdog + self-heal) target: the always-on local
+    # preview. The cloud links below are surfaced alongside it.
     deploy_url: Optional[str] = None
     api_url: Optional[str] = None
     database_url: Optional[str] = None
+    repo_url: Optional[str] = None
+    # Real cloud deploy links (best-effort; present only when configured/succeeded).
+    vercel_url: Optional[str] = None   # real Vercel frontend
+    render_url: Optional[str] = None   # real Render backend (builds from GitHub)
+    # Local preview links (always present once deployed).
+    local_url: Optional[str] = None        # local frontend (Docker stack or process)
+    local_api_url: Optional[str] = None    # local backend
+    docker: bool = False                   # True when the local preview is containerized
     metrics: Metrics = Field(default_factory=Metrics)
     incidents: List[Incident] = Field(default_factory=list)
     pipeline_status: str = "pending"  # pending|running|live|degraded|healed|failed

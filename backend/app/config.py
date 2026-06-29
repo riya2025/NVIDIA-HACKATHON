@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     # Disable TLS verification for the NVIDIA call (dev-only, for networks
     # that intercept SSL). Never enable in production.
     nvidia_insecure_ssl: bool = False
+    # Disable TLS verification for ALL outbound deploy traffic (GitHub API,
+    # Render API, the `vercel`/`git` CLIs). Dev-only, for SSL-intercepting
+    # networks (corporate proxy / antivirus). When left False it inherits the
+    # NVIDIA flag so a single NVIDIA_INSECURE_SSL=true covers everything.
+    insecure_ssl: bool = False
 
     # NeMo Agent Toolkit (NAT) server. When set, agent reasoning is routed
     # through the NAT `nat serve` workflow instead of calling NIM directly.
@@ -35,14 +40,66 @@ class Settings(BaseSettings):
     # Generated apps post client-side JS errors here so Monitoring/RCA can flag them.
     public_api_base: str = "http://localhost:8000"
 
-    # AWS deploy target
-    aws_region: str = "ap-south-1"
-    ecs_cluster: str = "ai-foundry"
-    ecr_repo: str = "ai-foundry/apps"
+    # Deployment runtime: "docker" runs the generated app as real Docker Compose
+    # containers (frontend + backend); "local" serves via Vite dev + uvicorn child
+    # processes. Docker falls back to local automatically if the build/up fails.
+    deploy_mode: str = "docker"
+    docker_build_timeout_s: int = 900
+    # Host used in the deployed app's URLs (frontend, backend, injected API_BASE).
+    # Empty = auto-detect this machine's LAN IP so the links work from other
+    # devices on the same network; set to "localhost" to keep it machine-local,
+    # or to a fixed IP/hostname to override (e.g. a public/Tailscale address).
+    public_host: str = ""
 
-    # Managed database the Deployment agent provisions (simulated AWS RDS/Aurora).
-    db_engine: str = "aurora-postgresql"
-    db_engine_version: str = "16.4"
+    # Continuous monitoring watchdog. Runs from app startup: periodically
+    # health-checks every deployed project and, when one goes unhealthy for
+    # `monitor_fail_threshold` consecutive checks, automatically runs the
+    # RCA -> Self-Heal flow (which restarts the container in docker mode).
+    monitor_enabled: bool = True
+    monitor_interval_s: float = 20.0
+    monitor_fail_threshold: int = 2
+    monitor_heartbeat_every: int = 6  # emit a "healthy" heartbeat every N ticks
+
+    # Cloud deploy targets: Vercel hosts the frontend, Render hosts the FastAPI
+    # backend + managed Postgres. When the matching tokens below are set, the
+    # Deployment agent performs a REAL deploy and surfaces the returned URLs;
+    # otherwise it runs the local Docker preview under the same Render/Vercel
+    # narration so the demo always shows a live app.
+    vercel_token: str = ""
+    vercel_org_id: str = ""        # optional; needed for non-interactive CLI deploys
+    vercel_project_id: str = ""    # optional; links to an existing Vercel project
+    # Team scope (slug) for token-auth deploys. Vercel CLI 54+ requires this
+    # explicitly in non-interactive mode when the token belongs to a team.
+    vercel_scope: str = ""
+    render_api_key: str = ""
+    render_deploy_hook_url: str = ""  # simplest real trigger: POST to deploy
+    render_region: str = "oregon"
+    render_plan: str = "free"
+    render_db_plan: str = "free"
+
+    # GitHub: when github_token is set, the Deployment agent creates a PUBLIC
+    # repo for the generated app and pushes it (real `git` push). This is what
+    # the Render API path deploys from (Render clones the public repo). Needs a
+    # PAT with `repo` scope (classic) or contents+administration (fine-grained).
+    github_token: str = ""
+    git_author_name: str = "AI Foundry"
+    git_author_email: str = "deploy@aifoundry.local"
+    # Retries for the GitHub create+push (the Render deploy depends on it). A
+    # transient OS "too many open files" (Errno 24) — common on Windows when an
+    # antivirus file-filter is in the path — usually clears on a short backoff.
+    github_push_retries: int = 3
+
+    # Supabase: managed Postgres + REST/Realtime. When supabase_url is set, the
+    # database is provisioned on Supabase (instead of Render Postgres) and the
+    # watchdog health-checks the Supabase project too.
+    supabase_url: str = ""          # https://<ref>.supabase.co
+    supabase_anon_key: str = ""     # public anon key (used for REST calls)
+    supabase_db_url: str = ""       # postgresql://postgres:<pwd>@db.<ref>.supabase.co:5432/postgres
+
+    # Managed Postgres the Deployment agent provisions on Render (default when
+    # Supabase is not configured).
+    db_engine: str = "postgresql"
+    db_engine_version: str = "16"
     db_master_username: str = "appadmin"
     db_port: int = 5432
 
@@ -91,6 +148,12 @@ class Settings(BaseSettings):
     @property
     def cors_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def tls_verify_off(self) -> bool:
+        """True when outbound TLS verification should be disabled. Inherits the
+        NVIDIA flag so one NVIDIA_INSECURE_SSL=true covers all deploy traffic."""
+        return self.insecure_ssl or self.nvidia_insecure_ssl
 
 
 settings = Settings()

@@ -45,6 +45,14 @@ export interface Project {
   description: string;
   architecture?: Record<string, any>;
   deploy_url?: string;
+  api_url?: string;
+  database_url?: string;
+  vercel_url?: string;
+  render_url?: string;
+  repo_url?: string;
+  local_url?: string;
+  local_api_url?: string;
+  docker?: boolean;
   metrics: Metrics;
   incidents: Incident[];
   pipeline_status: string;

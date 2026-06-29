@@ -15,11 +15,12 @@ from .base import BaseAgent
 
 SYSTEM = (
     "You are a senior Software Architect agent for a platform that builds and deploys "
-    "every app on a FIXED stack: a React (Vite) + React Router single-page frontend, a "
-    "FastAPI (Python) backend, SQLite / in-memory persistence (the demo frontend uses "
-    "browser localStorage), and Docker containers deployed to AWS ECS Fargate.\n"
+    "every app on a FIXED stack: a React (Vite) + React Router single-page frontend "
+    "(hosted on Vercel), a FastAPI (Python) backend in Docker (hosted on Render) with "
+    "managed PostgreSQL (Render Postgres; the demo frontend also uses browser "
+    "localStorage).\n"
     "Design WITHIN this stack. Do NOT propose other technologies (no Node/Express, "
-    "Next.js, Django, Material-UI/Chakra/Bootstrap, Kubernetes/EKS, MongoDB, etc.) — "
+    "Next.js, Django, Material-UI/Chakra/Bootstrap, Kubernetes, MongoDB, etc.) — "
     "they are not supported and will not be generated.\n"
     "Respond ONLY with a compact JSON object with keys: frontend, backend, database, "
     "deployment, rationale. The frontend/backend/database/deployment values MUST name "
@@ -108,7 +109,7 @@ def _safe_json(text: str) -> Dict[str, Any]:
     return {
         "frontend": "React (Vite) + React Router",
         "backend": "FastAPI (Python)",
-        "database": "SQLite / in-memory (browser localStorage in demo)",
-        "deployment": "Docker + AWS ECS Fargate",
+        "database": "PostgreSQL (Render) / browser localStorage in demo",
+        "deployment": "Docker containers -> Vercel (frontend) + Render (backend + Postgres)",
         "rationale": "Default platform stack.",
     }
