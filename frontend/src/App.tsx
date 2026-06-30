@@ -28,13 +28,6 @@ function fmtElapsed(ms: number): string {
   return m > 0 ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
 }
 
-function fmtAgo(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  return `${m}m ${s % 60}s ago`;
-}
-
 type Theme = "light" | "dark";
 
 function initialTheme(): Theme {
@@ -62,8 +55,6 @@ export default function App() {
   const [lastLog, setLastLog] = useState<Record<string, string>>({});
   const [code, setCode] = useState<Record<string, { preview: string; chars: number }>>({});
   const [pipelineStatus, setPipelineStatus] = useState("pending");
-  const [monitorMsg, setMonitorMsg] = useState<string>("");
-  const [monitorTs, setMonitorTs] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [connected, setConnected] = useState(false);
   const [startedAt, setStartedAt] = useState<number | null>(null);
@@ -104,21 +95,8 @@ export default function App() {
       }
       if (e.type === "pipeline" && e.data?.pipeline_status)
         setPipelineStatus(e.data.pipeline_status);
-      if (e.type === "incident") {
-        setPipelineStatus("degraded");
-        setStatuses((s) => ({ ...s, rca: "idle", healing: "idle" }));
-      }
-      if (e.type === "healed") setPipelineStatus("healed");
-
-      // Continuous-monitoring signals from the watchdog (active for the whole
-      // lifetime of a deployed app): heartbeat, armed notice, and alerts.
-      if (
-        e.agent === "monitoring" &&
-        (e.type === "metrics" || e.type === "alert" || e.type === "monitoring_armed")
-      ) {
-        setMonitorMsg(e.message);
-        setMonitorTs(Date.now());
-      }
+      // Surface runtime/build problems instead of hiding them.
+      if (e.type === "incident" || e.type === "client_error") setPipelineStatus("degraded");
 
       if (projectId.current) getProject(projectId.current).then(setProject).catch(() => {});
     });
@@ -143,13 +121,10 @@ export default function App() {
     pipelineStatus === "failed";
 
   useEffect(() => {
-    // Tick while a build is in progress OR while an app is deployed (so the
-    // "monitoring active / last check Ns ago" indicator stays live).
-    const ticking = (startedAt !== null && !terminal) || !!project?.deploy_url;
-    if (!ticking) return;
+    if (startedAt === null || terminal) return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [startedAt, terminal, project?.deploy_url]);
+  }, [startedAt, terminal]);
 
   async function onGenerate() {
     setBusy(true);
@@ -158,8 +133,6 @@ export default function App() {
     setLastLog({});
     setCode({});
     setPipelineStatus("running");
-    setMonitorMsg("");
-    setMonitorTs(null);
     setStartedAt(Date.now());
     setNow(Date.now());
     try {
@@ -172,17 +145,38 @@ export default function App() {
   }
 
   async function onIncident() {
-    if (projectId.current) await triggerIncident(projectId.current);
+    if (!projectId.current) return;
+    try {
+      await triggerIncident(projectId.current);
+    } catch {
+      /* ignore — the event stream will surface any failure */
+    }
   }
 
   const m = project?.metrics;
-  const live = pipelineStatus === "live" || pipelineStatus === "healed";
 
-  const completedCount = STAGES.filter((s) => statuses[s] === "success").length;
-  const failed = STAGES.some((s) => statuses[s] === "failed");
-  const progressPct = Math.round((completedCount / STAGES.length) * 100);
-  const currentStage = STAGES.find((s) => statuses[s] === "running");
+  // The status-loading bar (progress + stepper) tracks only the build stages.
+  // The ops agents (monitoring/rca/healing) still show as cards in the big
+  // Agent Pipeline box, just not in the build progress.
+  const OPS_STAGES = new Set(["monitoring", "rca", "healing"]);
+  const STEP_STAGES = STAGES.filter((s) => !OPS_STAGES.has(s));
+
+  const completedCount = STEP_STAGES.filter((s) => statuses[s] === "success").length;
+  const failed = STEP_STAGES.some((s) => statuses[s] === "failed");
+  const failedStage = STEP_STAGES.find((s) => statuses[s] === "failed");
+  const progressPct = Math.round((completedCount / STEP_STAGES.length) * 100);
+  const currentStage = STEP_STAGES.find((s) => statuses[s] === "running");
   const elapsed = startedAt !== null ? fmtElapsed(now - startedAt) : null;
+
+  // Make failures visible: pull the most relevant error message to show in a banner.
+  const showError = failed || pipelineStatus === "failed" || pipelineStatus === "degraded";
+  const lastFailureEvent = [...events]
+    .reverse()
+    .find((e) => e.type === "agent_failed" || e.type === "incident" || e.type === "client_error");
+  const errorText =
+    (failedStage ? lastLog[failedStage] : undefined) ||
+    lastFailureEvent?.message ||
+    "Something went wrong — see the Live Event Stream below.";
 
   const frontendStatus: AgentStatus = statuses["frontend"] ?? "idle";
   const backendStatus: AgentStatus = statuses["backend"] ?? "idle";
@@ -246,7 +240,12 @@ export default function App() {
         <button onClick={onGenerate} disabled={busy}>
           {busy ? "Starting…" : "Build & Deploy"}
         </button>
-        <button className="danger" onClick={onIncident} disabled={!live}>
+        <button
+          className="danger"
+          onClick={onIncident}
+          disabled={!project?.deploy_url}
+          title="Simulate a production failure to trigger Monitoring → RCA → Self-Healing"
+        >
           Kill Service
         </button>
       </div>
@@ -260,7 +259,7 @@ export default function App() {
             </div>
             <div className="status-meta">
               <span className="status-count">
-                {completedCount}/{STAGES.length} stages
+                {completedCount}/{STEP_STAGES.length} stages
               </span>
               {elapsed && <span className="status-elapsed">⏱ {elapsed}</span>}
             </div>
@@ -274,7 +273,7 @@ export default function App() {
           </div>
 
           <div className="stepper">
-            {STAGES.map((stage) => {
+            {STEP_STAGES.map((stage) => {
               const st = statuses[stage] ?? "idle";
               return (
                 <div key={stage} className={`step ${st}`}>
@@ -289,6 +288,22 @@ export default function App() {
         </div>
       )}
 
+      {showError && (
+        <div className="error-banner">
+          <span className="err-icon">⚠</span>
+          <div className="err-body">
+            <div className="err-title">
+              {pipelineStatus === "failed"
+                ? "Pipeline failed"
+                : failedStage
+                  ? `Error in ${LABELS[failedStage]}`
+                  : "Problem detected"}
+            </div>
+            <div className="err-msg">{errorText}</div>
+          </div>
+        </div>
+      )}
+
       <div className="grid">
         <div className="panel">
           <h2>Agent Pipeline</h2>
@@ -299,10 +314,7 @@ export default function App() {
                 stage={stage}
                 status={statuses[stage] ?? "idle"}
                 last={lastLog[stage]}
-                up={
-                  connected &&
-                  (stage === "monitoring" || stage === "rca" || stage === "healing")
-                }
+                up={connected && OPS_STAGES.has(stage)}
               />
             ))}
           </div>
@@ -426,21 +438,6 @@ export default function App() {
               <Metric label="Latency" value={m ? `${m.latency_ms}ms` : "—"} />
             </div>
 
-            {project?.deploy_url && (
-              <div className={`monitor-banner ${pipelineStatus === "degraded" ? "alert" : "ok"}`}>
-                <span className="mon-dot" />
-                <div className="mon-text">
-                  <div className="mon-title">
-                    Monitoring · RCA · Self-Heal —{" "}
-                    {pipelineStatus === "degraded" ? "incident detected, healing…" : "active"}
-                  </div>
-                  <div className="mon-sub">
-                    {monitorMsg || "Health-checking the live app continuously; auto-heals on failure."}
-                    {monitorTs !== null && <span className="mon-time"> · {fmtAgo(now - monitorTs)}</span>}
-                  </div>
-                </div>
-              </div>
-            )}
             {project?.incidents?.map((inc) => (
               <div key={inc.id} className={`incident ${inc.resolved ? "resolved" : ""}`}>
                 <div className="title">

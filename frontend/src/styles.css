@@ -22,8 +22,8 @@
   --border-soft: #1c2636;
 
   --text: #e8eef6;
-  --muted: #8b98ac;
-  --faint: #59667a;
+  --muted: #a4b1c4;
+  --faint: #6f7e93;
 
   --accent: #76b900; /* NVIDIA green */
   --accent-strong: #8ed600;
@@ -63,8 +63,8 @@
   --border-soft: #e7edf5;
 
   --text: #14202f;
-  --muted: #5c6b80;
-  --faint: #97a4b6;
+  --muted: #46566b;
+  --faint: #6b7a8e;
 
   --accent: #6aa800;
   --accent-strong: #76b900;
@@ -434,6 +434,23 @@ a.dt-docs:hover { text-decoration: underline; }
 .incident .title { font-weight: 650; font-size: 13px; }
 .incident .meta { font-size: 12px; color: var(--muted); margin-top: 6px; }
 
+/* ===== Error banner (surfaces build/pipeline failures prominently) ===== */
+.error-banner {
+  display: flex; align-items: flex-start; gap: 12px; margin-bottom: 22px;
+  padding: 14px 16px; border-radius: var(--radius);
+  background: linear-gradient(180deg, rgba(248, 81, 73, 0.12), transparent), var(--panel);
+  border: 1px solid var(--red); box-shadow: var(--shadow);
+  animation: fadeInUp 0.35s ease both;
+}
+.error-banner .err-icon { font-size: 18px; color: var(--red); line-height: 1.3; flex-shrink: 0; }
+.error-banner .err-body { min-width: 0; flex: 1; }
+.error-banner .err-title { font-weight: 750; font-size: 14px; color: var(--red); }
+.error-banner .err-msg {
+  font-size: 12.5px; color: var(--text); margin-top: 5px; word-break: break-word;
+  font-family: "JetBrains Mono", "Cascadia Code", monospace; line-height: 1.55;
+  max-height: 160px; overflow: auto;
+}
+
 /* ===== Continuous-monitoring banner ===== */
 .monitor-banner {
   display: flex; align-items: flex-start; gap: 10px; margin: 4px 0 14px;
@@ -467,7 +484,18 @@ a.dt-docs:hover { text-decoration: underline; }
 .logline.client_error .txt { color: #ff9c9c; }
 .logline.healed .tag, .logline.agent_completed .tag, .logline.metrics .tag, .logline.monitoring_armed .tag { color: var(--green); }
 .logline .txt { color: #c9d6e4; white-space: pre-wrap; word-break: break-word; }
-.empty { color: var(--muted); font-size: 13px; padding: 44px 0; text-align: center; animation: pulseSoft 2.4s ease-in-out infinite; }
+/* logs panel is always dark, so keep this readable regardless of theme */
+.empty { color: #9aa7bb; font-size: 13px; padding: 44px 0; text-align: center; animation: pulseSoft 2.4s ease-in-out infinite; }
+
+/* search box in the Live Event Stream header */
+.log-search {
+  width: 200px; max-width: 55%; min-width: 0; padding: 7px 13px; font-size: 12px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-pill);
+  color: var(--text); font-family: inherit;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.log-search::placeholder { color: var(--faint); }
+.log-search:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(118, 185, 0, 0.16); }
 
 /* ============================================================================
    Keyframes
