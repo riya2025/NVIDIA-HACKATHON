@@ -480,10 +480,26 @@ a.dt-docs:hover { text-decoration: underline; }
 }
 .logline { display: flex; gap: 8px; padding: 1px 0; animation: logIn 0.3s ease both; }
 .logline .tag { color: var(--accent-strong); flex-shrink: 0; }
-.logline.incident .tag, .logline.client_error .tag, .logline.alert .tag { color: var(--red); }
-.logline.client_error .txt { color: #ff9c9c; }
+.logline .txt { color: #e8eef7; white-space: pre-wrap; word-break: break-word; }
 .logline.healed .tag, .logline.agent_completed .tag, .logline.metrics .tag, .logline.monitoring_armed .tag { color: var(--green); }
-.logline .txt { color: #c9d6e4; white-space: pre-wrap; word-break: break-word; }
+
+/* Incidents/alerts are rendered as a prominent, always-readable alert row so
+   their text never washes out (e.g. under a browser find/selection highlight). */
+.logline.incident, .logline.client_error, .logline.alert {
+  background: rgba(248, 81, 73, 0.14);
+  border-left: 3px solid var(--red);
+  border-radius: 6px;
+  padding: 4px 8px;
+  margin: 3px 0;
+}
+.logline.incident .tag, .logline.client_error .tag, .logline.alert .tag { color: #ff6b66; font-weight: 700; }
+.logline.incident .txt, .logline.alert .txt { color: #ffdedb; font-weight: 600; }
+.logline.client_error .txt { color: #ffc7c4; font-weight: 600; }
+
+/* keep log text legible while selected / find-highlighted (logs panel is always dark) */
+.logs ::selection { background: #2f7ff0; color: #ffffff; }
+.logs ::-moz-selection { background: #2f7ff0; color: #ffffff; }
+.logs ::target-text { background: #2f7ff0; color: #ffffff; }
 /* logs panel is always dark, so keep this readable regardless of theme */
 .empty { color: #9aa7bb; font-size: 13px; padding: 44px 0; text-align: center; animation: pulseSoft 2.4s ease-in-out infinite; }
 
