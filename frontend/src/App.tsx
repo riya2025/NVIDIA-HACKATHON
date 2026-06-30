@@ -35,9 +35,26 @@ function fmtAgo(ms: number): string {
   return `${m}m ${s % 60}s ago`;
 }
 
+type Theme = "light" | "dark";
+
+function initialTheme(): Theme {
+  if (typeof document !== "undefined") {
+    const attr = document.documentElement.dataset.theme;
+    if (attr === "light" || attr === "dark") return attr;
+  }
+  try {
+    const saved = localStorage.getItem("foundry-theme");
+    if (saved === "light" || saved === "dark") return saved;
+    return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  } catch {
+    return "dark";
+  }
+}
+
 export default function App() {
   const [name, setName] = useState("Quick To-Do");
   const [description, setDescription] = useState(DEFAULT_PROMPT);
+  const [theme, setTheme] = useState<Theme>(initialTheme);
   const [project, setProject] = useState<Project | null>(null);
   const [events, setEvents] = useState<FoundryEvent[]>([]);
   const [statuses, setStatuses] = useState<Record<string, AgentStatus>>({});
@@ -53,6 +70,17 @@ export default function App() {
   const projectId = useRef<string | null>(null);
   const logsEnd = useRef<HTMLDivElement>(null);
   const liveAppRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem("foundry-theme", theme);
+    } catch {
+      /* storage unavailable (private mode) — non-fatal */
+    }
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", theme === "light" ? "#eef2f8" : "#070b12");
+  }, [theme]);
 
   useEffect(() => {
     const ws = openEventStream((e: FoundryEvent) => {
@@ -186,7 +214,17 @@ export default function App() {
             Autonomous Software Delivery — Generate → Deploy → Monitor → Self-Heal
           </div>
         </div>
-        <span className={`pill ${pipelineStatus}`}>{pipelineStatus.toUpperCase()}</span>
+        <div className="top-right">
+          <span className={`pill ${pipelineStatus}`}>{pipelineStatus.toUpperCase()}</span>
+          <button
+            className="theme-toggle"
+            onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            aria-label="Toggle color theme"
+          >
+            {theme === "dark" ? "☀" : "☾"}
+          </button>
+        </div>
       </header>
 
       <div className="composer">
@@ -262,8 +300,8 @@ export default function App() {
           </div>
         </div>
 
-        <div>
-          <div className="panel" style={{ marginBottom: 20 }} ref={liveAppRef}>
+        <div className="col-right">
+          <div className="panel" ref={liveAppRef}>
             <div className="codegen-head">
               <h2 style={{ margin: 0 }}>Live Application</h2>
               {project?.deploy_url ? (
@@ -408,7 +446,7 @@ export default function App() {
           </div>
 
           {(isGenerating || frontendCode || backendCode) && (
-            <div className="panel codegen" style={{ marginBottom: 20 }}>
+            <div className="panel codegen">
               <div className="codegen-head">
                 <h2 style={{ margin: 0 }}>Code Generation</h2>
                 {isGenerating && <span className="badge live-badge">● generating</span>}
@@ -436,7 +474,7 @@ export default function App() {
           )}
 
           {Object.keys(code).length > 0 && (
-            <div className="panel" style={{ marginBottom: 20 }}>
+            <div className="panel">
               <h2>Generated Code (live)</h2>
               {Object.entries(code).map(([path, info]) => (
                 <div key={path} className="code-block">
