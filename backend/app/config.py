@@ -14,9 +14,10 @@ class Settings(BaseSettings):
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     # Reasoning model (RCA + default). NVIDIA's purpose-built reasoning NIM.
     nemotron_model: str = "nvidia/llama-3.3-nemotron-super-49b-v1.5"
-    # Code-specialized model for the Developer agent. GLM is the fastest/most
-    # complete coder currently healthy on the NIM endpoint (benchmarked).
-    codegen_model: str = "z-ai/glm-5.1"
+    # Code-specialized model for the Developer/Tester agents. Qwen3-Next is the
+    # fastest healthy coder on the NIM endpoint as of 2026-06 (z-ai/glm-5.1 and
+    # the qwen2.5/qwen3-coder NIMs have since gone EOL / now hang on requests).
+    codegen_model: str = "qwen/qwen3-next-80b-a3b-instruct"
     # Planning model for the Architect (small JSON stack design). Nemotron is the
     # reasoning model; thinking is disabled in nvidia_client so output stays tight.
     architect_model: str = "nvidia/llama-3.3-nemotron-super-49b-v1.5"
@@ -48,7 +49,10 @@ class Settings(BaseSettings):
 
     # Behaviour
     demo_mode: bool = True
-    request_timeout_s: float = 60.0
+    # Per-request cap on each NIM call. Codegen produces large outputs (and may
+    # continue across several calls), and big models can cold-start, so allow
+    # generous headroom before a single request is considered timed out.
+    request_timeout_s: float = 120.0
     cors_origins: str = "*"
 
     # Client-side error handling. Generated apps beacon browser JS errors back here;
@@ -65,6 +69,20 @@ class Settings(BaseSettings):
     # On failure the error is fed back to the model to auto-fix, up to this many times,
     # before falling back to a minimal FastAPI scaffold.
     backend_build_retries: int = 2
+
+    # --- Tester agent --------------------------------------------------------
+    # The Tester agent lints the generated backend (Black + flake8) and runs
+    # LLM-generated pytest tests against it (FastAPI TestClient). When pytest
+    # tests fail/error, the failure is fed back to the codegen model to repair
+    # the test suite, up to this many times.
+    tester_test_retries: int = 1
+    # Run Black + flake8 lint checks on the generated backend code.
+    tester_run_lint: bool = True
+    # Auto-format the generated backend with Black when it isn't already
+    # compliant (keeps the shipped code clean instead of only flagging it).
+    tester_autoformat: bool = True
+    # Generate + run a pytest suite (FastAPI TestClient) against the backend.
+    tester_run_pytest: bool = True
 
     # --- RCA agent -----------------------------------------------------------
     # Run RCA as a LangGraph tool-calling ReAct agent (fetch_logs +

@@ -33,6 +33,7 @@ export default function App() {
   const [description, setDescription] = useState(DEFAULT_PROMPT);
   const [project, setProject] = useState<Project | null>(null);
   const [events, setEvents] = useState<FoundryEvent[]>([]);
+  const [logQuery, setLogQuery] = useState("");
   const [statuses, setStatuses] = useState<Record<string, AgentStatus>>({});
   const [lastLog, setLastLog] = useState<Record<string, string>>({});
   const [code, setCode] = useState<Record<string, { preview: string; chars: number }>>({});
@@ -137,6 +138,13 @@ export default function App() {
     devopsStatus === "running";
   const frontendCode = code[FRONTEND_KEY];
   const backendCode = code[BACKEND_KEY];
+
+  const logFilter = logQuery.trim().toLowerCase();
+  const filteredEvents = logFilter
+    ? events.filter((e) =>
+        `${e.agent} ${e.message} ${e.type}`.toLowerCase().includes(logFilter),
+      )
+    : events;
 
   const activity = currentStage
     ? lastLog[currentStage] ?? `${LABELS[currentStage]} working…`
@@ -331,15 +339,29 @@ export default function App() {
           )}
 
           <div className="panel">
-            <h2>Live Event Stream</h2>
+            <div className="codegen-head">
+              <h2 style={{ margin: 0 }}>Live Event Stream</h2>
+              <input
+                className="log-search"
+                value={logQuery}
+                onChange={(e) => setLogQuery(e.target.value)}
+                placeholder="Search logs…"
+                aria-label="Search event stream"
+              />
+            </div>
             <div className="logs">
-              {events.length === 0 && <div className="empty">No events yet. Click “Build & Deploy”.</div>}
-              {events.map((e, i) => (
-                <div key={i} className={`logline ${e.type}`}>
-                  <span className="tag">[{e.agent}]</span>
-                  <span className="txt">{e.message}</span>
-                </div>
-              ))}
+              {events.length === 0 ? (
+                <div className="empty">No events yet. Click “Build & Deploy”.</div>
+              ) : filteredEvents.length === 0 ? (
+                <div className="empty">No events match “{logQuery}”.</div>
+              ) : (
+                filteredEvents.map((e, i) => (
+                  <div key={i} className={`logline ${e.type}`}>
+                    <span className="tag">[{e.agent}]</span>
+                    <span className="txt">{e.message}</span>
+                  </div>
+                ))
+              )}
               <div ref={logsEnd} />
             </div>
           </div>

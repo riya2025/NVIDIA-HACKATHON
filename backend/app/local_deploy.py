@@ -376,6 +376,105 @@ def backend_build(app_dir: Path) -> tuple[bool, str]:
         return False, f"backend build error: {exc}"
 
 
+def tool_available(module: str) -> bool:
+    """True if `python -m <module>` runs (e.g. pytest/black/flake8 installed)."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", module, "--version"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=30, shell=False,
+        )
+        return result.returncode == 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def run_black(target: Path) -> tuple[bool, str]:
+    """Lint-format-check a Python file/dir with Black (`--check`, no rewrite).
+
+    Returns (ok, output). ok=True means the code is already correctly formatted.
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "black", "--check", "--quiet", str(target)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=120, shell=False,
+        )
+        out = (result.stdout or "") + (result.stderr or "")
+        return result.returncode == 0, out.strip()
+    except subprocess.TimeoutExpired:
+        return False, "black timed out"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"black error: {exc}"
+
+
+def black_format(target: Path) -> tuple[bool, str]:
+    """Auto-format a Python file/dir in place with Black. Returns (ok, output)."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "black", "--quiet", str(target)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=120, shell=False,
+        )
+        out = (result.stdout or "") + (result.stderr or "")
+        return result.returncode == 0, out.strip()
+    except Exception as exc:  # noqa: BLE001
+        return False, f"black error: {exc}"
+
+
+def run_flake8(target: Path, select: Optional[str] = None) -> tuple[bool, str]:
+    """Lint a Python file/dir with flake8. Returns (ok, output).
+
+    When `select` is given (e.g. "E9,F63,F7,F82") flake8 reports ONLY those
+    checks — the set that catches real bugs (syntax errors, undefined names,
+    duplicate args) rather than cosmetic style. With no `select` it runs a
+    lenient style pass (long lines allowed) for an informational warning count.
+    """
+    cmd = [sys.executable, "-m", "flake8", "--show-source"]
+    if select:
+        cmd += [f"--select={select}"]
+    else:
+        # Lenient style pass: ignore line-length + whitespace-before-colon noise
+        # that the generated code commonly trips, keep the rest informational.
+        cmd += ["--max-line-length=120", "--extend-ignore=E203,W503"]
+    cmd.append(str(target))
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=120, shell=False,
+        )
+        out = ((result.stdout or "") + (result.stderr or "")).strip()
+        return result.returncode == 0, out
+    except subprocess.TimeoutExpired:
+        return False, "flake8 timed out"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"flake8 error: {exc}"
+
+
+def run_pytest(backend_dir: Path) -> tuple[bool, str]:
+    """Run pytest in the generated backend dir. Returns (ok, output).
+
+    Tests live next to `main.py` (so `from main import app` resolves under
+    pytest's default prepend import mode). `-p no:cacheprovider` keeps the
+    generated app tree clean; `-q` keeps the streamed output compact.
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--no-header"],
+            cwd=str(backend_dir),
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=240, shell=False,
+        )
+        out = ((result.stdout or "") + (result.stderr or "")).strip()
+        # pytest exit codes: 0 = all passed, 5 = no tests collected.
+        return result.returncode == 0, out
+    except subprocess.TimeoutExpired:
+        return False, "pytest timed out after 240s"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"pytest error: {exc}"
+
+
 def start_backend(project) -> Optional[str]:
     """Start (or restart) the generated FastAPI backend with uvicorn.
 
