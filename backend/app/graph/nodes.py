@@ -70,7 +70,12 @@ def codegen_join(state: FoundryState) -> Dict[str, Any]:
 async def tester_node(state: FoundryState) -> Dict[str, Any]:
     project = load_project(state)
     out = await TesterAgent(project).run()
-    return {"test_results": out, "context_log": [f"tests passed={out.get('passed')}"]}
+    checks = out.get("checks") or {}
+    detail = ", ".join(f"{k}={v}" for k, v in checks.items()) or "no checks run"
+    return {
+        "test_results": out,
+        "context_log": [f"tester: passed={out.get('passed')} ({detail})"],
+    }
 
 
 async def deployment_node(state: FoundryState) -> Dict[str, Any]:

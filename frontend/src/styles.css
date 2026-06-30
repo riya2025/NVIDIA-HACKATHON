@@ -351,6 +351,12 @@ a.dt-docs:hover { text-decoration: underline; }
 /* logs */
 .logs { font-family: "Cascadia Code", "Consolas", monospace; font-size: 12px; line-height: 1.7;
   max-height: 460px; overflow-y: auto; background: #080c13; border-radius: var(--radius-sm); padding: 13px; border: 1px solid var(--border); }
+.log-search {
+  width: 220px; max-width: 55%; padding: 6px 11px; background: var(--panel);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-size: 12px;
+}
+.log-search::placeholder { color: var(--muted); }
+.log-search:focus { outline: none; border-color: var(--accent); }
 .logline { display: flex; gap: 8px; padding: 1px 0; }
 .logline .tag { color: var(--accent); flex-shrink: 0; }
 .logline.incident .tag, .logline.client_error .tag, .logline.alert .tag { color: var(--red); }
