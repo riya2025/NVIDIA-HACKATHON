@@ -96,12 +96,25 @@ FRONTEND_SYSTEM = (
     "(e.g. a picsum URL or a colored initials block) so a failed load never shows a broken icon. "
     "Give images a className and size them with CSS (object-fit: cover, rounded). Emoji are fine "
     "only as small inline accents in text/buttons, never as the main avatar/photo.\n"
-    "- Persist data in localStorage so the app ALWAYS works with no backend.\n"
-    "- A FastAPI backend MAY be reachable at window.API_BASE (a string set on the page). "
-    "You may optionally fetch from it (e.g. `fetch(window.API_BASE + '/health')`) when "
-    "window.API_BASE is set, but you MUST wrap such calls in try/catch and fall back to "
-    "localStorage so the app fully works whether or not the API responds.\n"
-    "- Implement EXACTLY the features in the requirement — no generic placeholder app.\n"
+    "- DATA STORAGE: a FastAPI backend is reachable at the global string `window.API_BASE` "
+    "(set on the page) and is the PRIMARY data store. Choose ONE lowercase collection name for "
+    "the app's main records (e.g. 'items', 'tasks', 'notes') and use this exact generic REST "
+    "contract (the backend already implements it):\n"
+    "    GET    window.API_BASE + '/api/store/' + COLLECTION            -> JSON array of records (each is a FLAT object: an `id` string plus its fields)\n"
+    "    POST   window.API_BASE + '/api/store/' + COLLECTION            -> body = { data: <record fields as an object> }; returns the saved record (with its new `id`)\n"
+    "    PUT    window.API_BASE + '/api/store/' + COLLECTION + '/' + id  -> body = { data: <the FULL updated record> }; returns the updated record\n"
+    "    DELETE window.API_BASE + '/api/store/' + COLLECTION + '/' + id  -> deletes the record\n"
+    "  CRITICAL: POST/PUT request bodies MUST wrap the record under a `data` key; the GET "
+    "response returns FLAT records where every field plus `id` is top-level. Load the list with "
+    "GET inside a useEffect on mount, and call POST/PUT/DELETE on every change, using "
+    "async/await wrapped in try/catch. Put ALL of the record's fields inside `data` (e.g. "
+    "checked, done, status, priority...) so nothing is dropped on reload.\n"
+    "- RESILIENCE: ALSO mirror records to localStorage and render from it immediately so the UI "
+    "is instant. If `window.API_BASE` is empty/unset or any fetch throws, fall back to "
+    "localStorage so the app fully works offline / with no backend. Never let a failed request "
+    "crash the UI or block rendering.\n"
+    "- Implement EXACTLY the features in the requirement — no generic placeholder app. The app's "
+    "domain fields live INSIDE each record's `data`; the /api/store routes above stay the same.\n"
     "- Do NOT use Material-UI, Chakra, Bootstrap, antd or ANY external component library "
     "(they are NOT installed and will FAIL the build).\n"
     "- JSX comments MUST be written as {/* ... */}. NEVER put // or /* */ comments inside JSX tags.\n"
@@ -149,6 +162,24 @@ CSS_SYSTEM = (
     "animations (e.g. fade/slide-in for cards). Keep it elegant, never gaudy.\n"
     "- Respect prefers-reduced-motion. Decent color contrast for accessibility.\n"
     "Return the FULL stylesheet, self-contained and valid CSS only."
+)
+
+README_SYSTEM = (
+    "You are a technical writer creating the 'how to use and test' part of a README "
+    "for a web app, aimed at a non-technical person who will click around to confirm "
+    "the app works. You are given the COMPLETE React source (src/App.jsx). Write "
+    "concise GitHub-flavored Markdown that:\n"
+    "1. Begins with a `## Using the app` heading, then walks through EACH screen / page "
+    "/ view the app actually has. For each one, list in plain language what the key "
+    "buttons, links, inputs and controls do. Describe ONLY features that genuinely exist "
+    "in the code — never invent pages or buttons.\n"
+    "2. Ends with a `## Quick test` heading followed by a numbered checklist (4-7 short "
+    "steps) walking the reader through the main happy path to verify the app end to end, "
+    "including confirming data appears where expected. If the code calls the backend "
+    "(e.g. fetch / window.API_BASE), add a step to confirm the backend responds.\n"
+    "Keep it tight and skimmable. Output ONLY the Markdown — no code fences around the "
+    "whole thing, no preamble, no sign-off. Do NOT include install, build, or deployment "
+    "instructions; those are added separately."
 )
 
 # Sets window.API_BASE at runtime. On a Vercel build Vite replaces
@@ -224,7 +255,15 @@ def _css_looks_valid(css: str) -> bool:
 
 
 def _wants_map(project) -> bool:
-    text = (project.description or "") + " " + _arch_text(project.architecture or {})
+    # Map support is a FRONTEND feature, so detect it from the description + the
+    # frontend architecture layer only. Scanning ALL layers (the old behaviour)
+    # caused false positives — e.g. "delivery"/"track" appearing in a backend or
+    # database layer would inject Leaflet that the generated UI never uses.
+    arch = project.architecture or {}
+    fe = arch.get("frontend")
+    if isinstance(fe, dict):
+        fe = fe.get("technology") or " ".join(str(v) for v in fe.values())
+    text = (project.description or "") + " " + str(fe or "")
     return any(k in text.lower() for k in ("map", "location", "geo", "pothole", "track", "delivery"))
 
 
@@ -336,10 +375,13 @@ BACKEND_SYSTEM = (
     "PERSISTENCE: a helper module `db` is already provided in the same folder. At startup "
     "call `db.init_db()`. Persist data with `db.add_record(collection, data_dict)`, "
     "`db.list_records(collection)`, `db.update_record(id, data_dict)` and "
-    "`db.delete_record(id)` (each record dict includes its 'id'). You may ALSO mount the "
-    "ready-made generic CRUD router with `app.include_router(db.router)`. Use `db` for "
-    "storage so data survives restarts and persists to PostgreSQL (Supabase/Render) in "
-    "production. Do NOT create your own engine or import sqlalchemy/sqlite3 directly — use `db`.\n"
+    "`db.delete_record(id)` (each record dict includes its 'id'). ALWAYS mount the "
+    "ready-made generic CRUD router with `app.include_router(db.router)` — the frontend relies "
+    "on the `/api/store/{collection}` endpoints it exposes (GET list, POST {data}, PUT {data}, "
+    "DELETE), so they MUST be available. You may add your own endpoints too, but keep the store "
+    "router mounted. Use `db` for storage so data survives restarts and persists to PostgreSQL "
+    "(Supabase/Render) in production. Do NOT create your own engine or import sqlalchemy/sqlite3 "
+    "directly — use `db`.\n"
     "IMPORTANT: import ONLY the Python standard library plus fastapi, pydantic, starlette "
     "and the local `db` module. Do NOT import other third-party packages such as "
     "jose/python-jose, passlib, bcrypt, requests, etc. — they are not installed and will "
@@ -412,8 +454,9 @@ class FrontendAgent(BaseAgent):
             await self.step("npm unavailable — writing the generated React source (build gate skipped)")
             write_files(self.project, {"src/App.jsx": app_code}, ensure_index=False)
             await self.preview("frontend (src/App.jsx)", app_code)
+            await self._write_readme(app_code)
             return {
-                "files": ["index.html", "package.json", "vite.config.js", "src/main.jsx", "src/App.jsx", "src/styles.css"],
+                "files": ["index.html", "package.json", "vite.config.js", "src/main.jsx", "src/App.jsx", "src/styles.css", "README.md"],
                 "frontend": "React (Vite multi-file project; build gate skipped, npm unavailable)",
                 "frontend_fallback": False,
             }
@@ -458,14 +501,57 @@ class FrontendAgent(BaseAgent):
             )
 
         await self.preview("frontend (src/App.jsx)", app_code)
+        await self._write_readme(app_code)
         await self.step(f"wrote React (Vite) project -> {app_dir}")
         css_kind = "LLM-tailored" if use_llm_css else "design-system"
         return {
-            "files": ["index.html", "package.json", "vite.config.js", "src/main.jsx", "src/App.jsx", "src/styles.css"],
+            "files": ["index.html", "package.json", "vite.config.js", "src/main.jsx", "src/App.jsx", "src/styles.css", "README.md"],
             "frontend": (f"React (Vite multi-file project, build-verified; {css_kind} CSS)" if build_ok
                          else f"React (Vite multi-file project; build gate did not pass; {css_kind} CSS)"),
             "frontend_fallback": False,
         }
+
+    async def _write_readme(self, app_code: str) -> None:
+        """Write the user-facing README: a usage walkthrough + test checklist
+        authored by the model FROM the actual src/App.jsx (so it describes the
+        pages/buttons THIS app really has), followed by run/deploy instructions.
+
+        The Frontend agent owns the README because it is the only codegen agent
+        with the app source; DevOps (which runs in parallel) no longer writes it.
+        """
+        arch_summary = _arch_text(self.project.architecture or {})
+        guide = ""
+        if nvidia.live:
+            await self.step("Writing a usage & test guide (README) from the generated code...")
+            guide = await self._guide(app_code)
+        readme = _readme(self.project, arch_summary, guide)
+        write_files(self.project, {"README.md": readme}, ensure_index=False)
+        await self.step("wrote README.md (usage & test guide + run/deploy)")
+
+    async def _guide(self, app_code: str) -> str:
+        """Ask the model for a 'how to use / test' guide tailored to this app's code."""
+        prompt = (
+            f"Application name: {self.project.name}\n"
+            f"What it's meant to do: {self.project.description}\n\n"
+            "Complete src/App.jsx for the app:\n\n"
+            f"{app_code[:12000]}\n\n"
+            "Write the `## Using the app` walkthrough and `## Quick test` checklist now."
+        )
+        raw = await asyncio.to_thread(
+            nvidia.complete,
+            prompt,
+            system=README_SYSTEM,
+            model=settings.codegen_model,
+            max_tokens=1200,
+            temperature=0.3,
+        )
+        text = (raw or "").strip()
+        if text.startswith("```"):
+            text = _strip_fences(text).strip()
+        # Reject empty / canned demo-mode output so we fall back to a generic guide.
+        if len(text) < 80 or text.lower().startswith("[demo]"):
+            return ""
+        return text
 
     async def _generate_css(self, req: str, app_code: str) -> str:
         """Author a bespoke, production-grade src/styles.css tailored to the exact
@@ -643,7 +729,11 @@ class BackendAgent(BaseAgent):
 
 
 class DevOpsAgent(BaseAgent):
-    """Generates deployment artifacts (Dockerfile, docker-compose, README)."""
+    """Generates deployment artifacts (Dockerfiles, docker-compose).
+
+    The user-facing README is authored by the Frontend agent (it owns the app
+    source and tailors the usage guide to it), so DevOps does not write README.md.
+    """
 
     stage = Stage.devops
     title = "DevOps Agent"
@@ -651,23 +741,17 @@ class DevOpsAgent(BaseAgent):
     async def execute(self) -> Dict[str, Any]:
         from .. import docker_deploy
 
-        arch_summary = _arch_text(self.project.architecture or {})
-
-        await self.step("Generating full-stack Docker artifacts (compose, Dockerfiles, README)...")
+        await self.step("Generating full-stack Docker artifacts (compose, Dockerfiles)...")
 
         # Runnable full-stack artifacts (nginx frontend + uvicorn backend).
-        docker_files = docker_deploy.write_docker_artifacts(self.project)
-        # README is owned by the DevOps agent.
-        write_files(self.project, {"README.md": _readme(self.project, arch_summary)}, ensure_index=False)
-
-        files = docker_files + ["README.md"]
+        files = docker_deploy.write_docker_artifacts(self.project)
         for path in files:
             await self.step(f"wrote {path}")
         await self.step("Deployment artifacts ready (docker compose up --build)")
 
         return {
             "files": files,
-            "deployment": "docker-compose + frontend/backend Dockerfiles + README",
+            "deployment": "docker-compose + frontend/backend Dockerfiles",
         }
 
 
@@ -862,11 +946,35 @@ except Exception:  # noqa: BLE001
 '''
 
 
-def _readme(project, arch_summary: str) -> str:
+def _usage_fallback(project) -> str:
+    """Generic 'how to use / test' guide used when the LLM guide is unavailable.
+
+    Apps are fully model-generated (no fixed scaffold), so this stays structure-
+    agnostic — it never claims specific pages/buttons that may not exist.
+    """
+    return (
+        "## Using the app\n\n"
+        f"{project.name} runs in your browser. Use the on-screen navigation "
+        "(header / menu) to move between its sections, the create/add controls to "
+        "add records, and each item's buttons (edit, complete/toggle, delete) to "
+        "manage it.\n\n"
+        "## Quick test\n"
+        "1. Open the app — it loads its starting screen.\n"
+        "2. Add a new record with the create/add control and save it.\n"
+        "3. Confirm the new record appears in the list/dashboard.\n"
+        "4. Edit it or change its status, then delete it — the list updates each time.\n"
+        "5. Refresh the page — your data is still there (saved via the backend, with a "
+        "localStorage fallback)."
+    )
+
+
+def _readme(project, arch_summary: str, guide_md: str = "") -> str:
+    body = (guide_md or "").strip() or _usage_fallback(project)
     return (
         f"# {project.name}\n\n"
         f"{project.description}\n\n"
         "_Generated by AI Foundry (NVIDIA Nemotron)._\n\n"
+        f"{body}\n\n"
         f"**Architecture:** {arch_summary}\n\n"
         "## Run the full stack with Docker\n"
         "```bash\n"
