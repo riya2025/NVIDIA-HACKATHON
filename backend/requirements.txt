@@ -17,3 +17,9 @@ langgraph==1.2.6
 langchain-core==1.4.8
 langchain-nvidia-ai-endpoints==1.4.2
 langchain-community==0.4.1
+# Tester agent: lints the generated backend (Black + flake8) and runs the
+# LLM-generated pytest suite against it (FastAPI TestClient). The agent degrades
+# gracefully (reports "skipped") if any of these are missing at runtime.
+pytest==8.3.4
+black==24.10.0
+flake8==7.1.1
