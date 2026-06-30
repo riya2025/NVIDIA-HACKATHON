@@ -14,8 +14,18 @@ from ..nvidia_client import nvidia
 from .base import BaseAgent
 
 SYSTEM = (
-    "You are a senior Software Architect agent. Given an app requirement, respond ONLY "
-    "with a compact JSON object with keys: frontend, backend, database, deployment, rationale."
+    "You are a senior Software Architect agent for a platform that builds and deploys "
+    "every app on a FIXED stack: a React (Vite) + React Router single-page frontend "
+    "(hosted on Vercel), a FastAPI (Python) backend in Docker (hosted on Render) with "
+    "managed PostgreSQL (Render Postgres; the demo frontend also uses browser "
+    "localStorage).\n"
+    "Design WITHIN this stack. Do NOT propose other technologies (no Node/Express, "
+    "Next.js, Django, Material-UI/Chakra/Bootstrap, Kubernetes, MongoDB, etc.) — "
+    "they are not supported and will not be generated.\n"
+    "Respond ONLY with a compact JSON object with keys: frontend, backend, database, "
+    "deployment, rationale. The frontend/backend/database/deployment values MUST name "
+    "the platform stack above; put the requirement-specific design (key entities, user "
+    "roles, pages/routes, and API endpoints) in 'rationale'."
 )
 
 
@@ -44,15 +54,16 @@ class ArchitectAgent(BaseAgent):
         fast direct NIM call. The Architect only emits a small JSON stack design,
         so the slow Nemotron reasoning path is opt-in (see `architect_use_nat`)."""
         if settings.architect_use_nat and settings.nat_url:
-            await self.step("Reasoning via NeMo Agent Toolkit (nat serve -> Nemotron)...")
+            await self.step("Reasoning via NeMo Agent Toolkit (LangGraph wrapper -> Qwen)...")
             try:
                 async with httpx.AsyncClient(timeout=settings.request_timeout_s) as client:
                     resp = await client.post(
-                        settings.nat_url, json={"requirement": requirement}
+                        settings.nat_url,
+                        json={"messages": [{"role": "user", "content": requirement}]},
                     )
                     resp.raise_for_status()
                     data = resp.json()
-                return data.get("value", "") if isinstance(data, dict) else str(data)
+                return _extract_nat_content(data)
             except Exception as exc:  # noqa: BLE001
                 log.warning("NAT call failed ({}); falling back to direct NIM", exc)
                 await self.step("NAT unavailable; falling back to direct call")
@@ -69,6 +80,25 @@ class ArchitectAgent(BaseAgent):
         )
 
 
+def _extract_nat_content(data: Any) -> str:
+    """Pull the design text out of the langgraph_wrapper `/generate` response.
+
+    The wrapper returns ``{"messages": [<human>, <ai>, ...]}``; the final
+    message's ``content`` is the model output. We also tolerate the simpler
+    ``{"value": ...}`` and ``{"output": ...}`` shapes other front ends emit.
+    """
+    if isinstance(data, dict):
+        messages = data.get("messages")
+        if isinstance(messages, list) and messages:
+            last = messages[-1]
+            if isinstance(last, dict):
+                return str(last.get("content", ""))
+        for key in ("value", "output", "result"):
+            if key in data:
+                return str(data[key])
+    return str(data)
+
+
 def _safe_json(text: str) -> Dict[str, Any]:
     start, end = text.find("{"), text.rfind("}")
     if start != -1 and end > start:
@@ -77,9 +107,9 @@ def _safe_json(text: str) -> Dict[str, Any]:
         except Exception:
             pass
     return {
-        "frontend": "Next.js",
-        "backend": "FastAPI",
-        "database": "PostgreSQL",
-        "deployment": "Docker + AWS ECS",
-        "rationale": "Default SaaS stack.",
+        "frontend": "React (Vite) + React Router",
+        "backend": "FastAPI (Python)",
+        "database": "PostgreSQL (Render) / browser localStorage in demo",
+        "deployment": "Docker containers -> Vercel (frontend) + Render (backend + Postgres)",
+        "rationale": "Default platform stack.",
     }

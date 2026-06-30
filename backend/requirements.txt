@@ -9,3 +9,11 @@ openai==2.44.0
 httpx==0.28.1
 python-dotenv==1.2.2
 loguru==0.7.3
+# In-process LangGraph agent pipeline (build + self-healing graphs) and the
+# RCA tool-calling ReAct agent. langchain-community powers the SQLite/Redis
+# LLM response cache. Redis is optional (install `redis` + a checkpoint/store
+# backend only if CACHE_BACKEND/CHECKPOINT_BACKEND/STORE_BACKEND=redis).
+langgraph==1.2.6
+langchain-core==1.4.8
+langchain-nvidia-ai-endpoints==1.4.2
+langchain-community==0.4.1

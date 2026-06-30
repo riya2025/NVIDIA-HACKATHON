@@ -9,7 +9,9 @@ const DEFAULT_PROMPT =
 
 const LABELS: Record<string, string> = {
   architect: "Architect",
-  developer: "Developer",
+  frontend: "Frontend",
+  backend: "Backend",
+  devops: "DevOps",
   tester: "Tester",
   deployment: "Deployment",
   monitoring: "Monitoring",
@@ -26,6 +28,13 @@ function fmtElapsed(ms: number): string {
   return m > 0 ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
 }
 
+function fmtAgo(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  return `${m}m ${s % 60}s ago`;
+}
+
 export default function App() {
   const [name, setName] = useState("Quick To-Do");
   const [description, setDescription] = useState(DEFAULT_PROMPT);
@@ -35,7 +44,10 @@ export default function App() {
   const [lastLog, setLastLog] = useState<Record<string, string>>({});
   const [code, setCode] = useState<Record<string, { preview: string; chars: number }>>({});
   const [pipelineStatus, setPipelineStatus] = useState("pending");
+  const [monitorMsg, setMonitorMsg] = useState<string>("");
+  const [monitorTs, setMonitorTs] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const [connected, setConnected] = useState(false);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState<number>(Date.now());
   const projectId = useRef<string | null>(null);
@@ -69,8 +81,20 @@ export default function App() {
       }
       if (e.type === "healed") setPipelineStatus("healed");
 
+      // Continuous-monitoring signals from the watchdog (active for the whole
+      // lifetime of a deployed app): heartbeat, armed notice, and alerts.
+      if (
+        e.agent === "monitoring" &&
+        (e.type === "metrics" || e.type === "alert" || e.type === "monitoring_armed")
+      ) {
+        setMonitorMsg(e.message);
+        setMonitorTs(Date.now());
+      }
+
       if (projectId.current) getProject(projectId.current).then(setProject).catch(() => {});
     });
+    ws.onopen = () => setConnected(true);
+    ws.onclose = () => setConnected(false);
     return () => ws.close();
   }, []);
 
@@ -90,10 +114,13 @@ export default function App() {
     pipelineStatus === "failed";
 
   useEffect(() => {
-    if (startedAt === null || terminal) return;
-    const id = setInterval(() => setNow(Date.now()), 500);
+    // Tick while a build is in progress OR while an app is deployed (so the
+    // "monitoring active / last check Ns ago" indicator stays live).
+    const ticking = (startedAt !== null && !terminal) || !!project?.deploy_url;
+    if (!ticking) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [startedAt, terminal]);
+  }, [startedAt, terminal, project?.deploy_url]);
 
   async function onGenerate() {
     setBusy(true);
@@ -102,6 +129,8 @@ export default function App() {
     setLastLog({});
     setCode({});
     setPipelineStatus("running");
+    setMonitorMsg("");
+    setMonitorTs(null);
     setStartedAt(Date.now());
     setNow(Date.now());
     try {
@@ -126,8 +155,13 @@ export default function App() {
   const currentStage = STAGES.find((s) => statuses[s] === "running");
   const elapsed = startedAt !== null ? fmtElapsed(now - startedAt) : null;
 
-  const devStatus: AgentStatus = statuses["developer"] ?? "idle";
-  const isGenerating = devStatus === "running";
+  const frontendStatus: AgentStatus = statuses["frontend"] ?? "idle";
+  const backendStatus: AgentStatus = statuses["backend"] ?? "idle";
+  const devopsStatus: AgentStatus = statuses["devops"] ?? "idle";
+  const isGenerating =
+    frontendStatus === "running" ||
+    backendStatus === "running" ||
+    devopsStatus === "running";
   const frontendCode = code[FRONTEND_KEY];
   const backendCode = code[BACKEND_KEY];
 
@@ -219,6 +253,10 @@ export default function App() {
                 stage={stage}
                 status={statuses[stage] ?? "idle"}
                 last={lastLog[stage]}
+                up={
+                  connected &&
+                  (stage === "monitoring" || stage === "rca" || stage === "healing")
+                }
               />
             ))}
           </div>
@@ -256,6 +294,78 @@ export default function App() {
             ) : (
               <div className="deploy-url">not deployed yet</div>
             )}
+
+            {(project?.vercel_url ||
+              project?.render_url ||
+              project?.repo_url ||
+              project?.local_url ||
+              project?.local_api_url) && (
+              <div className="deploy-targets">
+                {project?.repo_url && (
+                  <div className="dt-row">
+                    <span className="dt-plat github">GitHub</span>
+                    <span className="dt-kind">Source repo</span>
+                    <a className="dt-link" href={project.repo_url} target="_blank" rel="noreferrer">
+                      {project.repo_url} ↗
+                    </a>
+                  </div>
+                )}
+                {project?.vercel_url && (
+                  <div className="dt-row">
+                    <span className="dt-plat vercel">Vercel</span>
+                    <span className="dt-kind">Frontend</span>
+                    <a className="dt-link" href={project.vercel_url} target="_blank" rel="noreferrer">
+                      {project.vercel_url} ↗
+                    </a>
+                  </div>
+                )}
+                {project?.render_url && (
+                  <div className="dt-row">
+                    <span className="dt-plat render">Render</span>
+                    <span className="dt-kind">Backend API</span>
+                    <a className="dt-link" href={project.render_url} target="_blank" rel="noreferrer">
+                      {project.render_url} ↗
+                    </a>
+                    <a
+                      className="dt-docs"
+                      href={project.render_url.replace(/\/?$/, "/") + "docs"}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Swagger /docs ↗
+                    </a>
+                    <span className="dt-note">builds from GitHub · live in a few min</span>
+                  </div>
+                )}
+                {project?.local_url && (
+                  <div className="dt-row">
+                    <span className="dt-plat local">{project.docker ? "Local · Docker" : "Local"}</span>
+                    <span className="dt-kind">Frontend (live preview)</span>
+                    <a className="dt-link" href={project.local_url} target="_blank" rel="noreferrer">
+                      {project.local_url} ↗
+                    </a>
+                  </div>
+                )}
+                {project?.local_api_url && (
+                  <div className="dt-row">
+                    <span className="dt-plat local">{project.docker ? "Local · Docker" : "Local"}</span>
+                    <span className="dt-kind">Backend API (live preview)</span>
+                    <a className="dt-link" href={project.local_api_url} target="_blank" rel="noreferrer">
+                      {project.local_api_url} ↗
+                    </a>
+                    <a
+                      className="dt-docs"
+                      href={project.local_api_url.replace(/\/?$/, "/") + "docs"}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Swagger /docs ↗
+                    </a>
+                  </div>
+                )}
+              </div>
+            )}
+
             {project?.deploy_url && (
               <iframe
                 className="app-frame"
@@ -269,6 +379,22 @@ export default function App() {
               <Metric label="Memory" value={m ? `${m.memory}%` : "—"} />
               <Metric label="Latency" value={m ? `${m.latency_ms}ms` : "—"} />
             </div>
+
+            {project?.deploy_url && (
+              <div className={`monitor-banner ${pipelineStatus === "degraded" ? "alert" : "ok"}`}>
+                <span className="mon-dot" />
+                <div className="mon-text">
+                  <div className="mon-title">
+                    Monitoring · RCA · Self-Heal —{" "}
+                    {pipelineStatus === "degraded" ? "incident detected, healing…" : "active"}
+                  </div>
+                  <div className="mon-sub">
+                    {monitorMsg || "Health-checking the live app continuously; auto-heals on failure."}
+                    {monitorTs !== null && <span className="mon-time"> · {fmtAgo(now - monitorTs)}</span>}
+                  </div>
+                </div>
+              </div>
+            )}
             {project?.incidents?.map((inc) => (
               <div key={inc.id} className={`incident ${inc.resolved ? "resolved" : ""}`}>
                 <div className="title">
@@ -292,13 +418,19 @@ export default function App() {
               </div>
               <CodeTarget
                 label="Frontend — React"
-                generating={isGenerating && !frontendCode}
+                generating={frontendStatus === "running" && !frontendCode}
                 info={frontendCode}
               />
               <CodeTarget
                 label="Backend — FastAPI (main.py)"
-                generating={isGenerating && !backendCode}
+                generating={backendStatus === "running" && !backendCode}
                 info={backendCode}
+              />
+              <CodeTarget
+                label="DevOps — Dockerfile / compose"
+                generating={devopsStatus === "running"}
+                done={devopsStatus === "success"}
+                doneText="artifacts written"
               />
             </div>
           )}
@@ -340,24 +472,31 @@ function CodeTarget({
   label,
   generating,
   info,
+  done,
+  doneText,
 }: {
   label: string;
   generating: boolean;
   info?: { preview: string; chars: number };
+  done?: boolean;
+  doneText?: string;
 }) {
-  const state = info ? "done" : generating ? "generating" : "pending";
+  const isDone = !!info || !!done;
+  const state = isDone ? "done" : generating ? "generating" : "pending";
   return (
     <div className={`code-target ${state}`}>
       <span className="ct-icon">
-        {info ? "✓" : generating ? <span className="spinner" /> : "○"}
+        {isDone ? "✓" : generating ? <span className="spinner" /> : "○"}
       </span>
       <span className="ct-label">{label}</span>
       <span className="ct-status">
         {info
           ? `${info.chars.toLocaleString()} chars`
-          : generating
-            ? "writing…"
-            : "queued"}
+          : done
+            ? doneText ?? "done"
+            : generating
+              ? "writing…"
+              : "queued"}
       </span>
     </div>
   );

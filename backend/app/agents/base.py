@@ -41,6 +41,20 @@ class BaseAgent:
         await self.emit("agent_log", message)
         await asyncio.sleep(STEP_DELAY)
 
+    async def preview(self, path: str, code: str, lines: int = 14) -> None:
+        """Stream a peek at generated code so the UI shows what's inside."""
+        head = "\n".join(code.splitlines()[:lines])
+        await self.emit(
+            "code_preview",
+            f"Generated {path}",
+            {"path": path, "preview": head, "chars": len(code)},
+        )
+        await self.step(f"--- {path} ({len(code):,} chars) ---")
+        for ln in head.splitlines():
+            self.state.logs.append(ln)
+            await self.emit("agent_log", ln)
+        await asyncio.sleep(STEP_DELAY)
+
     async def run(self) -> Dict[str, Any]:
         self.state.status = AgentStatus.running
         self.log.info("{} started", self.title)
