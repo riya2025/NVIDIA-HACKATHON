@@ -210,7 +210,7 @@ export default function App() {
       <header className="top">
         <div>
           <h1>
-            <span className="logo-dot" /> AI Foundry
+            <span className="logo-dot" /> Orbius
           </h1>
           <div className="subtitle">
             Autonomous Software Delivery — Generate → Deploy → Monitor → Self-Heal
